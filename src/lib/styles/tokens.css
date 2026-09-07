@@ -1,0 +1,18 @@
+/* Placeholder role-alias layer, wired directly to the artefact's own palette (evening indigo, unbleached paper, brass) pending a real project theme. Run theme-factory for the html target seeded from this palette, then replace the values below with the emitted theme output. Components must only ever reference the color and font custom properties by name, never the hex values on the right. */
+:root {
+	--color-surface: #1C2140;
+	--color-surface-deep: #141833;
+	--color-text: #EFEAE0;
+	--color-text-muted: rgba(239, 234, 224, 0.62);
+	--color-text-faint: rgba(239, 234, 224, 0.34);
+	--color-primary: #D6AA52;
+	--color-on-primary: #1C2140;
+	--color-accent: #D6AA52;
+	--color-accent-muted: rgba(214, 170, 82, 0.55);
+	--color-danger: #D2603F;
+	--color-border: rgba(239, 234, 224, 0.16);
+	--color-border-faint: rgba(239, 234, 224, 0.34);
+
+	--font-serif: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+	--font-sans: 'Instrument Sans', system-ui, sans-serif;
+}
