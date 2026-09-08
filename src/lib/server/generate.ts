@@ -1,5 +1,6 @@
 import type { Difficulty, Question, PlanEntry, GenLog, GenAttempt, FetchBankResult, ReadingBlock } from "../types";
-import { callModel } from "./anthropic";
+import { callModel, MODEL } from "./anthropic";
+import { planSchema, SOLVE_SCHEMA, JUDGE_SCHEMA } from "./schemas";
 import {
 	bandText,
 	norm,
@@ -75,7 +76,7 @@ export async function fetchBank(topic: string, k: number, difficulty: Difficulty
 	let planCalls = 0, writeCalls = 0, emptyCalls = 0;
 	const abort = () => { if (signal?.aborted) throw Object.assign(new Error("cancelled"), { name: "AbortError" }); };
 	const newAttempt = (stage: GenAttempt["stage"], asked: number): GenAttempt => {
-		const a: GenAttempt = { stage, call: log.attempts.length + 1, asked, model: "claude-sonnet-4-6", status: null, apiError: null, stopReason: null, usage: null, rawHead: null, parse: null, validation: null, rateWaits: 0, startedAt: Date.now() };
+		const a: GenAttempt = { stage, call: log.attempts.length + 1, asked, model: MODEL, status: null, apiError: null, stopReason: null, usage: null, rawHead: null, parse: null, validation: null, rateWaits: 0, startedAt: Date.now() };
 		log.attempts.push(a);
 		return a;
 	};
@@ -114,7 +115,7 @@ Every answer must be a different thing; the same place, person or number under t
 Also give "members", your estimate of how many distinct members the topic has, and "format" as instructed above${log.reading ? "" : ', and "reading" as instructed above'}.
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {${log.reading ? "" : '"reading":{"includes":"...","excludes":"...","answers":"..."},'}"members":<int>,"format":"mixed" or "fixed: <pattern>","plan":[{"member":"...","angle":"...","answer":"...","level":<1-5>,"jargon":<true|false>}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: true, schema: planSchema(!log.reading) });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -245,7 +246,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. Q: ${it.q} A: ${it.a}${it.alt?.length ? ` (also: ${it.alt.join(", ")})` : ""}${(it.solverRivals?.length || it.solverDiffers) ? ` | candidates from a blind solver: ${[...(it.solverDiffers ? [it.solverBest] : []), ...(it.solverRivals || [])].filter(Boolean).join("; ")}` : ""}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"constraints":["C1 ...","C2 ..."],"verdicts":[{"id":<number>,"fails":["C2"],"correct":"yes"|"no"|"unsure","countFixed":<true|false|null>,"duplicateOf":<number or null>,"rivals":[{"name":"...","verdict":"same"|"real"|"wrong"}],"why":"twelve words at most, only when something fails"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: true, schema: JUDGE_SCHEMA });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -306,7 +307,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. ${it.q}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"solutions":[{"id":<number>,"best":"...","candidates":["..."],"fromWording":<true|false>,"confidence":"high"|"medium"|"low"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, schema: SOLVE_SCHEMA });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);

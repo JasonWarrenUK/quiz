@@ -16,7 +16,10 @@ export interface ModelResponse {
 
 export type CallModelAttempt = GenAttempt;
 
-const MODELS = ["claude-sonnet-4-6"];
+export const MODEL = "claude-sonnet-5";
+const MODELS = [MODEL];
+// Headroom, not a target: a cut-off response costs a retry, unused room costs nothing.
+const MAX_TOKENS = 8000;
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((res, rej) => {
@@ -30,17 +33,28 @@ interface CallModelOpts {
 	signal?: AbortSignal;
 	onStatus: (s: string) => void;
 	a: CallModelAttempt;
+	// Adaptive thinking: on for the calls that reason (plan, judge), off for the rest.
+	thinking?: boolean;
+	// JSON schema for structured output; the response text is then guaranteed to parse.
+	schema?: Record<string, unknown>;
 }
 
 // One API round trip with the transport handling this endpoint has needed:
 // 429 backoff, a retry when a 200 arrives with its first bytes missing, and
 // pause_turn continuation for long search loops. Records into `a`.
-export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a }: CallModelOpts): Promise<ModelResponse | null> {
+export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = false, schema }: CallModelOpts): Promise<ModelResponse | null> {
 	for (const m of MODELS) {
 		a.model = m;
 		let rateTries = 0;
 		try {
-			const reqBody = (msgs: unknown[]) => JSON.stringify({ model: m, max_tokens: 1000, messages: msgs, ...(useSearch ? { tools: [{ type: "web_search_20250305", name: "web_search", max_uses: maxUses }] } : {}) });
+			const reqBody = (msgs: unknown[]) => JSON.stringify({
+				model: m,
+				max_tokens: MAX_TOKENS,
+				messages: msgs,
+				...(thinking ? { thinking: { type: "adaptive" } } : {}),
+				...(schema ? { output_config: { format: { type: "json_schema", schema } } } : {}),
+				...(useSearch ? { tools: [{ type: "web_search_20250305", name: "web_search", max_uses: maxUses }] } : {})
+			});
 			const post = (msgs: unknown[]) => fetch("https://api.anthropic.com/v1/messages", {
 				method: "POST",
 				headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
