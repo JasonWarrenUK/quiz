@@ -1,0 +1,266 @@
+{
+	"$schema": "clod-theme/core@1",
+	"family": "brass",
+	"version": 1,
+	"rationale": {
+		"mood": "Warm brass held against a deep evening-indigo ground: a quiz night at a lamplit table, ledger-and-brass rather than screen-glow.",
+		"inspiration": "Quiz Night's own running interface (src/lib/styles/tokens.css): evening indigo, unbleached paper, brass, ember. The brief was to keep that identity while actually deriving it properly rather than re-encoding the artefact's ad hoc hex values.",
+		"anchor_reason": "Brass is the app's only genuinely warm, high-chroma colour and the one already carrying every point of emphasis and action (buttons, active chips, revealed answers). It survives both surfaces: near-full chroma in dark mode, where it sits on the indigo ground it was designed against, and darkened to clear 4.5:1 on a near-white light surface.",
+		"rule_bent": "Surfaces take the harmony hue (274.7 degrees, indigo, the near-complementary of brass) rather than the anchor's own hue. The seed's identity lives in the indigo ground, not the brass accent, so deriving surfaces from the anchor hue directly (as the default rule suggests) produced a warm amber-on-amber theme that lost the evening-indigo character the seed was chosen for. The anchor still governs accent directly; accent-2 takes a second harmony step to violet (300 degrees) so it reads as distinct from both the indigo surface and the blue info swatch, rather than collapsing into either.",
+		"rejected": [
+			{
+				"palette": "Amber surfaces derived directly from the brass anchor's own hue (83 degrees)",
+				"why": "Technically followed the default derivation rule, but produced a warm brown-black dark surface that abandoned the seed's evening-indigo identity; the brief asked for the current palette improved, not replaced."
+			},
+			{
+				"palette": "Ember (the artefact's original secondary warm colour) promoted to accent-2",
+				"why": "Only 46 degrees from the brass anchor on the hue wheel, too close to function as a genuine harmony partner; it reads as a shade of the same warm family rather than a second colour. Kept ember's actual role instead: it sits almost exactly in the danger status region (37 degrees vs. the conventional ~25 degrees), so it became the seed for danger rather than accent-2."
+			},
+			{
+				"palette": "Straight complementary violet-blue for accent-2 (262.6 degrees)",
+				"why": "Sat only 12 degrees from the info swatch's conventional hue (250 degrees), close enough to likely read as one hue family rather than two distinct accents. Pushed to 300 degrees instead, clear of both info and the indigo surface."
+			}
+		]
+	},
+	"anchor": {
+		"name": "brass",
+		"hex": "#D6AA52",
+		"oklch": [
+			0.761,
+			0.1177,
+			82.6
+		]
+	},
+	"palette": {
+		"ink": {
+			"light": "#111526",
+			"dark": "#E8EBF5",
+			"role": "primary text"
+		},
+		"ink-muted": {
+			"light": "#535769",
+			"dark": "#9397A8",
+			"role": "secondary text, captions, meta"
+		},
+		"surface": {
+			"light": "#F4F6FF",
+			"dark": "#11152B",
+			"role": "page background"
+		},
+		"surface-raised": {
+			"light": "#E9ECF8",
+			"dark": "#1F233B",
+			"role": "cards, panels, code blocks"
+		},
+		"line": {
+			"light": "#C6CAD8",
+			"dark": "#363B55",
+			"role": "borders, rules, dividers"
+		},
+		"accent": {
+			"light": "#8E5F00",
+			"dark": "#D6AA52",
+			"role": "links, primary actions, highlights"
+		},
+		"accent-ink": {
+			"light": "#FFFBF4",
+			"dark": "#140C01",
+			"role": "text placed on accent"
+		},
+		"accent-2": {
+			"light": "#644395",
+			"dark": "#A584DC",
+			"role": "secondary emphasis, gradient partner"
+		},
+		"ok": {
+			"light": "#2F7434",
+			"dark": "#6DBA70",
+			"role": "success, done, passing"
+		},
+		"warn": {
+			"light": "#996700",
+			"dark": "#E3AD4B",
+			"role": "caution, pending, stale"
+		},
+		"danger": {
+			"light": "#BD4238",
+			"dark": "#E6705F",
+			"role": "error, blocked, destructive"
+		},
+		"info": {
+			"light": "#2266A4",
+			"dark": "#73A9E1",
+			"role": "neutral notice, in progress"
+		}
+	},
+	"gradient": {
+		"light": [
+			"#A27000",
+			"#A93F55",
+			"#644395"
+		],
+		"dark": [
+			"#D6AA52",
+			"#D4848F",
+			"#9372C8"
+		]
+	},
+	"typography": {
+		"display": {
+			"family": "Fraunces",
+			"fallback": "'Iowan Old Style', Georgia, serif",
+			"weight": 500
+		},
+		"body": {
+			"family": "Instrument Sans",
+			"fallback": "system-ui, sans-serif",
+			"weight": 400
+		},
+		"mono": {
+			"family": "JetBrains Mono",
+			"fallback": "ui-monospace, monospace",
+			"weight": 400
+		},
+		"scale": {
+			"base_px": 16,
+			"ratio": 1.25,
+			"line_height": 1.5
+		}
+	},
+	"shape": {
+		"radius_px": {
+			"sm": 3,
+			"md": 6,
+			"lg": 12
+		},
+		"shadow": {
+			"blur_px": 24,
+			"offset_y_px": 8,
+			"opacity": 0.28
+		},
+		"space_px": {
+			"unit": 8
+		}
+	},
+	"contrast": {
+		"light": [
+			{
+				"fg": "ink",
+				"bg": "surface",
+				"level": "AA",
+				"ratio": 16.8
+			},
+			{
+				"fg": "ink",
+				"bg": "surface-raised",
+				"level": "AA",
+				"ratio": 15.37
+			},
+			{
+				"fg": "ink-muted",
+				"bg": "surface",
+				"level": "AA",
+				"ratio": 6.63
+			},
+			{
+				"fg": "accent",
+				"bg": "surface",
+				"level": "AA",
+				"ratio": 5.14
+			},
+			{
+				"fg": "accent-ink",
+				"bg": "accent",
+				"level": "AA",
+				"ratio": 5.38
+			},
+			{
+				"fg": "ok",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 5.31
+			},
+			{
+				"fg": "warn",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 4.53
+			},
+			{
+				"fg": "danger",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 4.87
+			},
+			{
+				"fg": "info",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 5.56
+			}
+		],
+		"dark": [
+			{
+				"fg": "ink",
+				"bg": "surface",
+				"level": "AA",
+				"ratio": 15.12
+			},
+			{
+				"fg": "ink",
+				"bg": "surface-raised",
+				"level": "AA",
+				"ratio": 12.95
+			},
+			{
+				"fg": "ink-muted",
+				"bg": "surface",
+				"level": "AA",
+				"ratio": 6.2
+			},
+			{
+				"fg": "accent",
+				"bg": "surface",
+				"level": "AA",
+				"ratio": 8.35
+			},
+			{
+				"fg": "accent-ink",
+				"bg": "accent",
+				"level": "AA",
+				"ratio": 8.99
+			},
+			{
+				"fg": "ok",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 7.64
+			},
+			{
+				"fg": "warn",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 8.87
+			},
+			{
+				"fg": "danger",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 5.87
+			},
+			{
+				"fg": "info",
+				"bg": "surface",
+				"level": "AA-large",
+				"ratio": 7.28
+			}
+		]
+	},
+	"provenance": {
+		"seed": "src/lib/styles/tokens.css (quiz-night's own placeholder palette: evening indigo, unbleached paper, brass, ember)",
+		"derived_from": null,
+		"created": "2026-09-08",
+		"updated": "2026-09-08",
+		"tool": "theme-factory@1"
+	}
+}

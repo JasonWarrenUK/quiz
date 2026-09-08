@@ -1,0 +1,37 @@
+{
+	"$schema": "clod-theme/target@1",
+	"family": "brass",
+	"target": "html",
+	"extends": "brass.json",
+	"rationale": { "mapping_notes": "Tokens are the core palette copied verbatim per variant, plus a linear --gradient built from the light/dark gradient stops. Type and shape tokens come straight from the core's typography and shape blocks. google_fonts lists Fraunces and Instrument Sans, the two families the core's typography.display and typography.body name; JetBrains Mono (typography.mono) is also on Google Fonts and is included for parity even though quiz-night's current UI has no monospace surface yet." },
+	"html": {
+		"tokens": {
+			"light": {
+				"--ink": "#111526", "--ink-muted": "#535769",
+				"--surface": "#F4F6FF", "--surface-raised": "#E9ECF8", "--line": "#C6CAD8",
+				"--accent": "#8E5F00", "--accent-ink": "#FFFBF4", "--accent-2": "#644395",
+				"--ok": "#2F7434", "--warn": "#996700", "--danger": "#BD4238", "--info": "#2266A4",
+				"--gradient": "linear-gradient(135deg, #A27000 0%, #A93F55 50%, #644395 100%)"
+			},
+			"dark": {
+				"--ink": "#E8EBF5", "--ink-muted": "#9397A8",
+				"--surface": "#11152B", "--surface-raised": "#1F233B", "--line": "#363B55",
+				"--accent": "#D6AA52", "--accent-ink": "#140C01", "--accent-2": "#A584DC",
+				"--ok": "#6DBA70", "--warn": "#E3AD4B", "--danger": "#E6705F", "--info": "#73A9E1",
+				"--gradient": "linear-gradient(135deg, #D6AA52 0%, #D4848F 50%, #9372C8 100%)"
+			}
+		},
+		"type": {
+			"--font-display": "'Fraunces', 'Iowan Old Style', Georgia, serif",
+			"--font-body": "'Instrument Sans', system-ui, sans-serif",
+			"--font-mono": "'JetBrains Mono', ui-monospace, monospace",
+			"--text-base": "16px", "--text-ratio": "1.25", "--leading": "1.5"
+		},
+		"shape": {
+			"--radius-sm": "3px", "--radius-md": "6px", "--radius-lg": "12px",
+			"--shadow": "0 8px 24px rgba(0, 0, 0, 0.28)", "--space": "8px"
+		},
+		"google_fonts": ["Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900", "Instrument+Sans:wght@400;500;600", "JetBrains+Mono:wght@400;500"],
+		"theme_switch": "data-theme attribute on :root plus prefers-color-scheme fallback (see artefact-conventions)"
+	}
+}

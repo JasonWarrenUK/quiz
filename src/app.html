@@ -6,6 +6,14 @@
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
+		<script>
+			(function () {
+				try {
+					var mode = localStorage.getItem('theme');
+					if (mode === 'light' || mode === 'dark') document.documentElement.setAttribute('data-theme', mode);
+				} catch (e) { /* private window, blocked storage, preview capture: ignore */ }
+			})();
+		</script>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>

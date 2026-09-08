@@ -1,18 +1,80 @@
-/* Placeholder role-alias layer, wired directly to the artefact's own palette (evening indigo, unbleached paper, brass) pending a real project theme. Run theme-factory for the html target seeded from this palette, then replace the values below with the emitted theme output. Components must only ever reference the color and font custom properties by name, never the hex values on the right. */
-:root {
-	--color-surface: #1C2140;
-	--color-surface-deep: #141833;
-	--color-text: #EFEAE0;
-	--color-text-muted: rgba(239, 234, 224, 0.62);
-	--color-text-faint: rgba(239, 234, 224, 0.34);
-	--color-primary: #D6AA52;
-	--color-on-primary: #1C2140;
-	--color-accent: #D6AA52;
-	--color-accent-muted: rgba(214, 170, 82, 0.55);
-	--color-danger: #D2603F;
-	--color-border: rgba(239, 234, 224, 0.16);
-	--color-border-faint: rgba(239, 234, 224, 0.34);
+/* Emitted from .claude/themes/brass-html.json (theme-factory). Do not hand-edit the palette values below; change the theme and re-run emit.ts instead. The role-alias block at the end is this project's own bridge from the theme's generic names (--ink, --surface, --accent...) to the semantic names components actually reference (--color-text, --color-surface, --color-primary...); it is not part of the emitted output. This app is dark-mode-first (no light rendering has been built or tested), so light and dark are swapped from the theme's own default: the bare :root carries the dark palette, and :root[data-theme="light"] carries light. */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
-	--font-serif: 'Fraunces', 'Iowan Old Style', Georgia, serif;
-	--font-sans: 'Instrument Sans', system-ui, sans-serif;
+:root {
+	--ink: #E8EBF5;
+	--ink-muted: #9397A8;
+	--surface: #11152B;
+	--surface-raised: #1F233B;
+	--line: #363B55;
+	--accent: #D6AA52;
+	--accent-ink: #140C01;
+	--accent-2: #A584DC;
+	--ok: #6DBA70;
+	--warn: #E3AD4B;
+	--danger: #E6705F;
+	--info: #73A9E1;
+	--gradient: linear-gradient(135deg, #D6AA52 0%, #D4848F 50%, #9372C8 100%);
+	--font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+	--font-body: 'Instrument Sans', system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
+	--text-base: 16px;
+	--text-ratio: 1.25;
+	--leading: 1.5;
+	--radius-sm: 3px;
+	--radius-md: 6px;
+	--radius-lg: 12px;
+	--shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+	--space: 8px;
+}
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) {
+		--ink: #111526;
+		--ink-muted: #535769;
+		--surface: #F4F6FF;
+		--surface-raised: #E9ECF8;
+		--line: #C6CAD8;
+		--accent: #8E5F00;
+		--accent-ink: #FFFBF4;
+		--accent-2: #644395;
+		--ok: #2F7434;
+		--warn: #996700;
+		--danger: #BD4238;
+		--info: #2266A4;
+		--gradient: linear-gradient(135deg, #A27000 0%, #A93F55 50%, #644395 100%);
+	}
+}
+:root[data-theme="light"] {
+	--ink: #111526;
+	--ink-muted: #535769;
+	--surface: #F4F6FF;
+	--surface-raised: #E9ECF8;
+	--line: #C6CAD8;
+	--accent: #8E5F00;
+	--accent-ink: #FFFBF4;
+	--accent-2: #644395;
+	--ok: #2F7434;
+	--warn: #996700;
+	--danger: #BD4238;
+	--info: #2266A4;
+	--gradient: linear-gradient(135deg, #A27000 0%, #A93F55 50%, #644395 100%);
+}
+
+/* Role-alias bridge: components reference only the names below, never the theme's own token names above. */
+:root {
+	--color-surface: var(--surface);
+	--color-surface-deep: var(--surface-raised);
+	--color-text: var(--ink);
+	--color-text-muted: var(--ink-muted);
+	--color-text-faint: color-mix(in oklab, var(--ink-muted) 55%, transparent);
+	--color-primary: var(--accent);
+	--color-on-primary: var(--accent-ink);
+	--color-accent: var(--accent);
+	--color-accent-muted: color-mix(in oklab, var(--accent) 55%, transparent);
+	--color-danger: var(--danger);
+	--color-border: var(--line);
+	--color-border-faint: color-mix(in oklab, var(--line) 55%, transparent);
+
+	--font-serif: var(--font-display);
+	--font-sans: var(--font-body);
 }
