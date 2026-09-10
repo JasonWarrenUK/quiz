@@ -53,6 +53,10 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 				messages: msgs,
 				...(thinking ? { thinking: { type: "adaptive" } } : {}),
 				...(schema ? { output_config: { format: { type: "json_schema", schema } } } : {}),
+				// Basic variant on purpose. web_search_20260209 (dynamic filtering) was
+				// tried on 2026-09-08: it doubled input tokens and tripled write-call
+				// time on this workload, because its filtering runs as extra
+				// code-execution turns whose output also lands in context.
 				...(useSearch ? { tools: [{ type: "web_search_20250305", name: "web_search", max_uses: maxUses }] } : {})
 			});
 			const post = (msgs: unknown[]) => fetch("https://api.anthropic.com/v1/messages", {
