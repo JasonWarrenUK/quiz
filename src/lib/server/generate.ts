@@ -1,4 +1,4 @@
-import type { Difficulty, Question, PlanEntry, GenLog, GenAttempt, FetchBankResult, ReadingBlock } from "../types";
+import type { Difficulty, Question, PlanEntry, GenLog, GenAttempt, FetchBankResult, ReadingBlock, DroppedEntry } from "../types";
 import { callModel, MODEL } from "./anthropic";
 import { planSchema, SOLVE_SCHEMA, JUDGE_SCHEMA } from "./schemas";
 import {
@@ -74,6 +74,15 @@ export async function fetchBank(topic: string, k: number, difficulty: Difficulty
 	let pending: PlanEntry[] = []; // approved plan entries awaiting a question
 	let members: number | null = null, relax = 0;
 	let planCalls = 0, writeCalls = 0, emptyCalls = 0;
+	// Entries that failed at write, solve or judge. The plan prompt lists them
+	// as off limits and selectPlan rejects them mechanically, so a refill cannot
+	// loop on the same dead entry.
+	const dropped: DroppedEntry[] = [];
+	const dropEntry = (it: PlanEntry, why: string) => { dropped.push({ subject: it.subject, angle: it.angle, a: it.a, why: why.slice(0, 120) }); };
+	// Plan entries beyond what was needed, never examined. Re-validated and
+	// promoted before paying for another plan call.
+	let reserve: Record<string, unknown>[] = [];
+	let spareNote: string | null = null;
 	const abort = () => { if (signal?.aborted) throw Object.assign(new Error("cancelled"), { name: "AbortError" }); };
 	const newAttempt = (stage: GenAttempt["stage"], asked: number): GenAttempt => {
 		const a: GenAttempt = { stage, call: log.attempts.length + 1, asked, model: MODEL, status: null, apiError: null, stopReason: null, usage: null, rawHead: null, parse: null, validation: null, rateWaits: 0, startedAt: Date.now() };
@@ -111,7 +120,7 @@ Produce ${need + SPARES} candidate entries for a set of ${k} questions (${need} 
 - "answer": the single, short, factual answer, exactly as it should be revealed. It must be a specific thing: a hedged or approximate answer ("very little", "about a tenth", "several") is not an answer and will be rejected
 - "level": your honest 1-5 rating for the table above; every level must be ${bandText(difficulty)}
 - "jargon": true if a general-interest newspaper would need to explain the answer, else false
-Every answer must be a different thing; the same place, person or number under two names is a repeat.${used.length ? `\nAlready in the set, which you must not repeat (answer): ${used.map((u) => `${u.subject} → ${u.a}`).join("; ")}.${relax ? " The topic's members are nearly used up, so a second question about an already-used member is allowed if it asks something different." : " Do not reuse a member already listed."}` : ""}
+Every answer must be a different thing; the same place, person or number under two names is a repeat.${used.length ? `\nAlready in the set, which you must not repeat (answer): ${used.map((u) => `${u.subject} → ${u.a}`).join("; ")}.${relax ? " The topic's members are nearly used up, so a second question about an already-used member is allowed if it asks something different." : " Do not reuse a member already listed."}` : ""}${dropped.length ? `\nTried earlier in this round and dropped. Do not propose these again, nor anything resting on the same fact: ${dropped.map((d) => `${d.subject} (${d.angle} → ${d.a}): ${d.why}`).join("; ")}.` : ""}
 Also give "members", your estimate of how many distinct members the topic has, and "format" as instructed above${log.reading ? "" : ', and "reading" as instructed above'}.
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {${log.reading ? "" : '"reading":{"includes":"...","excludes":"...","answers":"..."},'}"members":<int>,"format":"mixed" or "fixed: <pattern>","plan":[{"member":"...","angle":"...","answer":"...","level":<1-5>,"jargon":<true|false>}]}`;
@@ -129,8 +138,9 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 			log.reading = { includes: String(r.includes || "").slice(0, 300), excludes: String(r.excludes || "").slice(0, 300), answers: String(r.answers || "").slice(0, 200) } satisfies ReadingBlock;
 		}
 		if (!entries.length) { a.rawHead = text.slice(0, 400); return; }
-		const { chosen, rejected } = selectPlan(entries, need, difficulty, [...kept, ...pending], members, k, relax);
+		const { chosen, rejected, spare } = selectPlan(entries, need, difficulty, [...kept, ...pending], members, k, relax, dropped);
 		pending = [...pending, ...chosen];
+		reserve = [...reserve, ...spare];
 		// Every entry rejected, and only on caps: the topic is exhausted at this
 		// cap. Loosen one notch for the next plan rather than let the round die.
 		if (!chosen.length && rejected.length && rejected.every((r) => r.why.every((w) => /already used|specialist-term answer/.test(w))) && relax < 1) {
@@ -152,6 +162,7 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		writeCalls += 1;
 		const items = pending.slice(0, batch);
 		const a = newAttempt("write", items.length);
+		if (spareNote) { a.spareNote = spareNote; spareNote = null; }
 		onStatus(`writing (${kept.length}/${k})`);
 		const prompt = `WRITE quiz questions for a plan that has already been approved.
 ${DIFF_PROMPT[difficulty]}
@@ -185,7 +196,7 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		else if (complete && batch < initialBatch) { a.batchNote = `batch ${batch} → ${batch + 1} (clean call)`; batch += 1; }
 		if (!qs.length) { a.rawHead = text.slice(0, 400); return; }
 
-		const dropped: string[] = [], done = new Set<number>();
+		const droppedNotes: string[] = [], done = new Set<number>();
 		for (const x of qs) {
 			const id = Number(x.id);
 			const it = items[id - 1];
@@ -206,7 +217,7 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 			// alternates must not collide with any other kept answer
 			const others = [...kept, ...pending.filter((p) => p !== it)];
 			const cleanAlt = alt.filter((v: string) => !others.some((o) => answersCollide(o.a, v)));
-			if (why.length) { dropped.push(`${it.subject}: ${why.join(", ")}`); pending = pending.filter((p) => p !== it); continue; }
+			if (why.length) { droppedNotes.push(`${it.subject}: ${why.join(", ")}`); dropEntry(it, why.join(", ")); pending = pending.filter((p) => p !== it); continue; }
 			const source = String(x.source || "").trim().slice(0, 160) || null;
 			const claimed = x.verified === true || String(x.verified).toLowerCase() === "true";
 			const verified = useSearch ? (claimed && !!source) : null;
@@ -215,7 +226,7 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 			pending = pending.filter((p) => p !== it);
 		}
 		// entries the writer ignored stay pending for the next write call
-		a.validation = dropped.length ? `dropped ${dropped.length}: ${dropped.join(" | ")}` : "all kept";
+		a.validation = droppedNotes.length ? `dropped ${droppedNotes.length}: ${droppedNotes.join(" | ")}` : "all kept";
 		a.subjects = summary();
 	}
 
@@ -280,7 +291,7 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		}
 		items.filter((it) => !it.judged).forEach((it) => { it.judged = "unjudged"; });
 		const before = kept.length;
-		for (let i = kept.length - 1; i >= 0; i--) if (kept[i].judged === "out") kept.splice(i, 1);
+		for (let i = kept.length - 1; i >= 0; i--) if (kept[i].judged === "out") { dropEntry(kept[i], kept[i].judgeNote || "judged out"); kept.splice(i, 1); }
 		a.validation = out.length ? `out ${before - kept.length}: ${out.join(" | ")}` : "all in";
 		a.subjects = summary();
 	}
@@ -338,14 +349,26 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		}
 		items.filter((it) => !it.solved).forEach((it) => { it.solved = "unsolved"; });
 		const before = kept.length;
-		for (let i = kept.length - 1; i >= 0; i--) if (kept[i].solved === "out") kept.splice(i, 1);
+		for (let i = kept.length - 1; i >= 0; i--) if (kept[i].solved === "out") { dropEntry(kept[i], kept[i].judgeNote || "answerable from the wording"); kept.splice(i, 1); }
 		a.validation = [out.length ? `out ${before - kept.length}: ${out.join(" | ")}` : "all solvable", noted.length ? `noted: ${noted.join(" | ")}` : ""].filter(Boolean).join(" · ");
 		a.subjects = summary();
+	}
+
+	// Before paying for a plan call, re-validate the spares from earlier plans
+	// against the current set and promote whatever still passes.
+	function promoteSpares(need: number) {
+		if (!reserve.length) return;
+		const r = selectPlan(reserve, need, difficulty, [...kept, ...pending], members, k, relax, dropped);
+		reserve = r.spare;
+		if (!r.chosen.length) return;
+		pending = [...pending, ...r.chosen];
+		spareNote = `${r.chosen.length} promoted from spares instead of a plan call`;
 	}
 
 	const maxPlan = 4, maxWrite = Math.ceil(k / initialBatch) + 6, maxEmpty = 4, maxJudge = 3, maxSolve = 3;
 	while (emptyCalls < maxEmpty) {
 		if (kept.length < k) {
+			if (!pending.length) promoteSpares(k - kept.length);
 			if (!pending.length) {
 				if (planCalls >= maxPlan) break;
 				await plan(k - kept.length);
@@ -368,6 +391,7 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		const cnt = (l: number) => kept.filter((x) => x.level === l).length;
 		if (cnt(3) < cnt(2) || cnt(3) < cnt(4)) log.acceptedWithProblems = [log.acceptedWithProblems, `medium set is not mostly level 3 (${cnt(2)}×2, ${cnt(3)}×3, ${cnt(4)}×4)`].filter(Boolean).join("; ");
 	}
+	if (dropped.length) log.dropped = dropped;
 	log.shortfall = Math.max(0, k - kept.length);
 	log.finishedAt = new Date().toISOString();
 	onStatus(kept.length >= k ? "done" : kept.length ? `short (${kept.length}/${k})` : "failed");

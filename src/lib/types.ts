@@ -72,6 +72,16 @@ export interface PlanRejection {
 export interface SelectPlanResult {
 	chosen: PlanEntry[];
 	rejected: PlanRejection[];
+	spare: Record<string, unknown>[];
+}
+
+// A plan entry that failed after planning (at write, solve or judge), kept so
+// the next plan call neither proposes it again nor has it accepted.
+export interface DroppedEntry {
+	subject: string;
+	angle: string;
+	a: string;
+	why: string;
 }
 
 export interface ReadingBlock {
@@ -101,6 +111,7 @@ export interface GenAttempt {
 	pauses?: number;
 	batchNote?: string;
 	relaxNote?: string;
+	spareNote?: string;
 	transportRetry?: string;
 	subjects?: string[];
 }
@@ -119,6 +130,7 @@ export interface GenLog {
 	reading?: ReadingBlock;
 	judgeConstraints?: string[];
 	acceptedWithProblems?: string;
+	dropped?: DroppedEntry[];
 	shortfall?: number;
 	fatal?: string;
 	cancelled?: boolean;

@@ -40,6 +40,12 @@ describe("answerLeaks", () => {
 	it("exempts topic words from the leak check", () => {
 		expect(answerLeaks("What did Romans call the everyday spoken form of their language?", ["Vulgar Latin"], fixtures.romanceTopic)).toBeNull();
 	});
+	it("catches a four-letter answer given away by a longer word sharing its root", () => {
+		expect(answerLeaks("Tiberius Gracchus championed a programme to redistribute what to landless citizens?", ["land"], fixtures.republicTopic)).toBe("land");
+	});
+	it("does not match a question word that merely contains the answer's letters", () => {
+		expect(answerLeaks("Which mineral results from evaporating seawater?", ["salt"], "cooking")).toBeNull();
+	});
 });
 
 describe("salvageQuestions", () => {
@@ -78,6 +84,18 @@ describe("selectPlan", () => {
 		const r = selectPlan(fixtures.planEntries, 6, "Easy", [], 10, 6);
 		expect(r.chosen).toHaveLength(2);
 		expect(r.rejected).toHaveLength(4);
+		expect(r.spare).toHaveLength(0);
+	});
+	it("returns entries beyond need as spares, unexamined", () => {
+		const r = selectPlan(fixtures.planEntries, 1, "Easy", [], 10, 6);
+		expect(r.chosen).toHaveLength(1);
+		expect(r.rejected).toHaveLength(0);
+		expect(r.spare).toHaveLength(5);
+	});
+	it("rejects an entry that was dropped downstream, by member and answer", () => {
+		const r = selectPlan(fixtures.planEntries, 6, "Easy", [], 10, 6, 0, fixtures.droppedGermanic);
+		expect(r.chosen.some((c) => c.subject === "Germanic branch")).toBe(false);
+		expect(r.rejected.some((x) => x.member === "Germanic branch" && x.why[0].startsWith("already tried and dropped"))).toBe(true);
 	});
 });
 

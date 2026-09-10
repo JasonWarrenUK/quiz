@@ -1,6 +1,12 @@
-import type { Question } from "../../src/lib/types";
+import type { Question, DroppedEntry } from "../../src/lib/types";
 
 export const romanceTopic = "The evolution of vulgar Latin into romance languages";
+export const republicTopic = "Roman republic (from the gracchi to julius caesar)";
+
+// The first plan entry, as it would be recorded after failing at write.
+export const droppedGermanic: DroppedEntry[] = [
+	{ subject: "Germanic branch", angle: "where it spread from", a: "the steppe", why: "answerable from the wording" }
+];
 
 export const truncatedPlanResponse = `{"members": 47, "questions": [{"subject":["Vulgar Latin","what-called"],"level":3,"q":"Q?","a":"Vulgar Latin","alt":["sermo vulgaris"]},{"subject":["sound change in Gallo-Romance",`;
 

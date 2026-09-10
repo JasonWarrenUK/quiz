@@ -7,6 +7,7 @@ import type {
 	PlanEntry,
 	PlanRejection,
 	SelectPlanResult,
+	DroppedEntry,
 	ScheduleEntry,
 	Question,
 	SelfTestResult,
@@ -47,13 +48,16 @@ const sigWords = (t: unknown): string[] => norm(t).split(" ").filter((w) => w &&
 
 // Does the question give the whole answer away? Every distinctive word of the
 // answer (stem-matched) present in the question. Topic words are exempt.
+// A question word counts if it starts with the answer word's stem: for a
+// five-letter stem that is the usual stem match; for a four-letter answer
+// word it also catches "landless" giving away "land".
 export function answerLeaks(q: string, answers: string[], topic: string): string | null {
 	const topicStems = new Set(sigWords(topic).map((w) => w.slice(0, 5)));
-	const qStems = new Set(norm(q).split(" ").filter(Boolean).map((w) => w.slice(0, 5)));
+	const qWords = norm(q).split(" ").filter(Boolean);
 	for (const ans of answers) {
 		const sig = sigWords(ans).map((w) => w.slice(0, 5)).filter((st) => !topicStems.has(st));
 		if (!sig.length) continue;
-		if (sig.every((st) => qStems.has(st))) return ans;
+		if (sig.every((st) => qWords.some((w) => w.startsWith(st)))) return ans;
 	}
 	return null;
 }
@@ -276,17 +280,24 @@ export function answersCollide(a: string, b: string): boolean {
 }
 
 // Choose up to `need` plan entries that pass the mechanical checks, given what
-// is already kept. Pure, so it can be tested against real plans.
+// is already kept. Entries beyond `need` that were never examined come back as
+// `spare`, so a later refill can re-validate them instead of re-planning.
+// `dropped` lists entries that failed downstream (write, solve, judge); the
+// same member on the same angle or answer is rejected. Pure, so it can be
+// tested against real plans.
 const HEDGED = /^(?:about|around|roughly|approximately|nearly|almost|under|over|less than|more than|very|several|some|few|many|most|a few|a lot)\b|\b(?:or so|ish)$/i;
-export function selectPlan(entries: Record<string, unknown>[], need: number, difficulty: Difficulty, kept: PlanEntry[], members: number | null, k: number, relax = 0): SelectPlanResult {
+export function selectPlan(entries: Record<string, unknown>[], need: number, difficulty: Difficulty, kept: PlanEntry[], members: number | null, k: number, relax = 0, dropped: DroppedEntry[] = []): SelectPlanResult {
 	const [lo, hi] = DIFF_BAND[difficulty];
 	const allowedPerMember = (members && members < k ? Math.min(2, Math.ceil(k / members)) : 1) + relax;
 	const jargonCap = 1 + relax;
-	const chosen: PlanEntry[] = [], rejected: PlanRejection[] = [];
+	const chosen: PlanEntry[] = [], rejected: PlanRejection[] = [], spare: Record<string, unknown>[] = [];
 	const all = () => [...kept, ...chosen];
 	for (const e of entries) {
-		if (chosen.length >= need) break;
+		if (chosen.length >= need) { spare.push(e); continue; }
 		const member = String(e?.member || "").trim(), answer = String(e?.answer || "").trim(), angle = String(e?.angle || "").trim();
+		const wasDropped = dropped.find((d) => same(norm(d.subject), norm(member)) && (answersCollide(d.a, answer) || same(norm(d.angle), norm(angle))));
+		if (wasDropped) rejected.push({ member: member || "?", answer, why: [`already tried and dropped (${wasDropped.why})`] });
+		if (wasDropped) continue;
 		const lv = Number(e?.level), jargon = e?.jargon === true || String(e?.jargon).toLowerCase() === "true";
 		const why: string[] = [];
 		if (!member) why.push("no member");
@@ -304,7 +315,7 @@ export function selectPlan(entries: Record<string, unknown>[], need: number, dif
 		if (why.length) { rejected.push({ member: member || "?", answer, why }); continue; }
 		chosen.push({ subject: member, angle, a: answer, alt: [], level: lv, jargon, q: null, verified: null });
 	}
-	return { chosen, rejected };
+	return { chosen, rejected, spare };
 }
 
 // ---------- self-tests ----------
