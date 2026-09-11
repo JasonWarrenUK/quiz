@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { callModel, type CallModelAttempt } from "./anthropic";
+import { callModel, makeClient, setClientForTests, type CallModelAttempt } from "./anthropic";
 
-// The transport layer had no tests. These pin the behaviour that the retry,
-// pause_turn and deadline paths are meant to have, so the later SDK swap has
-// something to be checked against.
+// The transport layer's tests. The SDK issues its own requests rather than
+// going through the global fetch, so a fetch is injected into the client here
+// instead of stubbing a global: same mock shape, honest plumbing.
 
 vi.mock("$env/static/private", () => ({ ANTHROPIC_API_KEY: "test-key" }));
 
@@ -23,13 +23,23 @@ const attempt = (): CallModelAttempt => ({
 	startedAt: Date.now()
 });
 
-const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+const ok = (body: unknown) =>
+	new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+
 const msg = (text: string, extra: Record<string, unknown> = {}) => ({
-	content: [{ type: "text", text }],
+	id: "msg_1",
+	type: "message",
+	role: "assistant",
+	model: "claude-sonnet-5",
+	content: [{ type: "text", text, citations: null }],
 	stop_reason: "end_turn",
+	stop_sequence: null,
 	usage: { input_tokens: 10, output_tokens: 5 },
 	...extra
 });
+
+const err = (status: number, body: unknown) =>
+	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const opts = (a: CallModelAttempt, over: Record<string, unknown> = {}) => ({
 	useSearch: false,
@@ -40,17 +50,27 @@ const opts = (a: CallModelAttempt, over: Record<string, unknown> = {}) => ({
 });
 
 let fetchMock: ReturnType<typeof vi.fn>;
+let restore: () => void;
 
-beforeEach(() => {
-	vi.useFakeTimers();
-	fetchMock = vi.fn();
-	vi.stubGlobal("fetch", fetchMock);
-});
+// Fake timers make the backoff sleeps instant. Scoped to the describes that
+// need them rather than the whole file: the SDK's own timeout and abort
+// handling run on real timers, which fake ones do not drive.
+function withFakeTimers() {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		fetchMock = vi.fn();
+		restore = setClientForTests(makeClient(fetchMock as unknown as typeof fetch));
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		restore();
+	});
+}
 
-afterEach(() => {
-	vi.useRealTimers();
-	vi.unstubAllGlobals();
-});
+// The SDK's ContentBlock is a discriminated union, so text has to be narrowed
+// to rather than read off the union.
+const textOf = (blocks: { type: string }[] | undefined) =>
+	(blocks ?? []).filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text);
 
 // Drives a promise that awaits fake timers to completion.
 async function run<T>(p: Promise<T>): Promise<T> {
@@ -59,6 +79,8 @@ async function run<T>(p: Promise<T>): Promise<T> {
 }
 
 describe("callModel transport", () => {
+	withFakeTimers();
+
 	it("retries after a 429 and records the wait count", async () => {
 		fetchMock
 			.mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
@@ -70,7 +92,7 @@ describe("callModel transport", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 		expect(a.rateWaits).toBe(1);
 		expect(a.status).toBe(200);
-		expect(res?.content[0].text).toBe("done");
+		expect(textOf(res?.content)).toEqual(["done"]);
 	});
 
 	it("gives up after the 429 ceiling and reports the error", async () => {
@@ -96,7 +118,7 @@ describe("callModel transport", () => {
 
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 		expect(a.transportRetry).toContain("body not JSON");
-		expect(res?.content[0].text).toBe("recovered");
+		expect(textOf(res?.content)).toEqual(["recovered"]);
 	});
 
 	it("continues a pause_turn and accumulates content across both responses", async () => {
@@ -108,7 +130,7 @@ describe("callModel transport", () => {
 		const res = await run(callModel("p", opts(a, { useSearch: true, maxUses: 4 })));
 
 		expect(a.pauses).toBe(1);
-		expect(res?.content.map((b) => b.text)).toEqual(["first", "second"]);
+		expect(textOf(res?.content)).toEqual(["first", "second"]);
 		expect(res?.stop_reason).toBe("end_turn");
 	});
 
@@ -138,79 +160,11 @@ describe("callModel transport", () => {
 		expect(a.apiError).toContain("invalid_request_error: bad");
 	});
 
-	it("aborts a request that outlives its timeout", async () => {
-		// The timer runs on the real event loop, so this case uses real timers.
-		vi.useRealTimers();
-		// A request that never settles on its own: only the timeout can end it.
-		fetchMock.mockImplementation(
-			(_url: string, init: { signal: AbortSignal }) =>
-				new Promise((_res, rej) => {
-					init.signal.addEventListener("abort", () => rej(init.signal.reason), { once: true });
-				})
-		);
-		const a = attempt();
-
-		const res = await callModel("p", opts(a, { timeoutMs: 20 }));
-
-		expect(res).toBeNull();
-		expect(a.apiError).toContain("network");
-	});
-
-	it("clears the timeout once a request settles, leaving no pending timer", async () => {
-		// AbortSignal.timeout would keep a timer alive for the full duration on
-		// every request; a run makes many, so the timer is cleared on completion.
-		vi.useRealTimers();
-		fetchMock.mockResolvedValueOnce(ok(msg("x")));
-
-		await callModel("p", opts(attempt(), { timeoutMs: 20 }));
-
-		const sent = fetchMock.mock.calls[0][1].signal as AbortSignal;
-		expect(sent.aborted).toBe(false);
-		await new Promise((r) => setTimeout(r, 50));
-		// Past the timeout, and still not aborted: the timer was cleared.
-		expect(sent.aborted).toBe(false);
-	});
-
-	it("still propagates a caller cancellation through the combined signal", async () => {
-		// AbortSignal.any keeps the distinction: a caller abort stays AbortError
-		// and must propagate, while a timeout is TimeoutError and is recorded.
-		// If these were conflated, pressing Cancel would look like a failed call
-		// and the run would carry on.
-		const caller = new AbortController();
-		// What fetch throws when the caller's half of the combined signal fires.
-		fetchMock.mockImplementation(async () => {
-			throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
-		});
-		const a = attempt();
-
-		// Attach the rejection handler before draining timers, so the rejection
-		// is never momentarily unhandled.
-		const call = callModel("p", opts(a, { signal: caller.signal, timeoutMs: 90_000 }));
-		const assertion = expect(call).rejects.toMatchObject({ name: "AbortError" });
-		await vi.runAllTimersAsync();
-		await assertion;
-		// A cancellation propagates; it is not recorded as a failed call.
-		expect(a.apiError).toBeNull();
-	});
-
-	it("keeps caller cancellation and timeout distinguishable in the combined signal", async () => {
-		// The two must not be conflated: AbortError propagates and ends the run,
-		// TimeoutError is a failed call the pipeline records and moves past.
-		// Both arms are plain controllers here, matching what callModel builds.
-		const caller = new AbortController();
-		const timer = new AbortController();
-		const combined = AbortSignal.any([caller.signal, timer.signal]);
-
-		caller.abort(Object.assign(new Error("cancelled"), { name: "AbortError" }));
-
-		expect(combined.reason?.name).toBe("AbortError");
-	});
-
-	it("treats a timeout abort as a network error rather than a cancellation", async () => {
+	it("treats a dropped connection as a network error, not a cancellation", async () => {
 		// A caller cancellation must propagate, but a timeout is a failed call
 		// that the pipeline records and moves past.
 		fetchMock.mockImplementation(async () => {
-			throw Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
+			throw Object.assign(new Error("socket hang up"), { name: "TypeError" });
 		});
 		const a = attempt();
 
@@ -260,6 +214,8 @@ describe("callModel transport", () => {
 });
 
 describe("callModel request shape", () => {
+	withFakeTimers();
+
 	const bodyOf = () => JSON.parse(fetchMock.mock.calls[0][1].body as string);
 
 	it("disables thinking explicitly rather than by omission", async () => {
@@ -305,4 +261,63 @@ describe("callModel request shape", () => {
 
 		expect(bodyOf().system).toBeUndefined();
 	});
+});
+
+// The SDK enforces the request timeout and detects a caller's abort with its
+// own timers, which vitest's fake ones do not drive. These two run on real
+// timers with short waits instead.
+describe("callModel aborts (real timers)", () => {
+	let realFetch: ReturnType<typeof vi.fn>;
+	let undo: () => void;
+
+	beforeEach(() => {
+		realFetch = vi.fn();
+		undo = setClientForTests(makeClient(realFetch as unknown as typeof fetch));
+	});
+	afterEach(() => undo());
+
+	it("gives up on a request that outlives its timeout", async () => {
+		// The SDK enforces the per-request timeout now; what matters here is that
+		// it ends the call and is recorded as a network failure, not a cancellation.
+		// The SDK aborts via the signal it passes down, so the fake honours it
+		// the way a real fetch would.
+		realFetch.mockImplementation(
+			(_url: string, init: { signal?: AbortSignal }) =>
+				new Promise((_res, rej) => {
+					init.signal?.addEventListener("abort", () => rej(init.signal!.reason), { once: true });
+				})
+		);
+		const a = attempt();
+
+		const res = await callModel("p", opts(a, { timeoutMs: 20 }));
+
+		expect(res).toBeNull();
+		expect(a.apiError).toContain("network");
+	});
+
+	it("still propagates a caller cancellation through the combined signal", async () => {
+		// The SDK wraps a caller abort as APIUserAbortError with name "Error", so
+		// a plain name check misses it. If that goes unnoticed, pressing Cancel
+		// is recorded as a failed call and the run carries on regardless.
+		const caller = new AbortController();
+		// The SDK watches the caller's signal and raises APIUserAbortError, whose
+		// name is a plain "Error"; the fake aborts the way a real fetch would.
+		realFetch.mockImplementation(
+			(_url: string, init: { signal?: AbortSignal }) =>
+				new Promise((_res, rej) => {
+					init.signal?.addEventListener("abort", () => rej(init.signal!.reason), { once: true });
+				})
+		);
+		setTimeout(() => caller.abort(), 5);
+		const a = attempt();
+
+		// Attach the rejection handler before draining timers, so the rejection
+		// is never momentarily unhandled.
+		const call = callModel("p", opts(a, { signal: caller.signal, timeoutMs: 90_000 }));
+		const assertion = expect(call).rejects.toMatchObject({ name: "AbortError" });
+		await assertion;
+		// A cancellation propagates; it is not recorded as a failed call.
+		expect(a.apiError).toBeNull();
+	});
+
 });

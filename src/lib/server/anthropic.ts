@@ -1,44 +1,110 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { ANTHROPIC_API_KEY } from "$env/static/private";
 import type { GenAttempt } from "../types";
 
-export interface ContentBlock {
-	type: string;
-	text?: string;
-	input?: { query?: string };
-	content?: unknown;
-}
-
-export interface Usage {
-	input_tokens: number;
-	output_tokens: number;
-	cache_creation_input_tokens?: number;
-	cache_read_input_tokens?: number;
-	// Thinking is billed as output whether or not it is displayed, so this is
-	// the only way to see what a thinking setting actually costs.
-	output_tokens_details?: { thinking_tokens?: number };
-	server_tool_use?: { web_search_requests?: number };
-}
-
-export interface ModelResponse {
-	content: ContentBlock[];
-	stop_reason?: string;
-	usage?: Usage;
-}
+// The SDK's own types for everything the pipeline reads off a response.
+export type ContentBlock = Anthropic.ContentBlock;
+export type Usage = Anthropic.Usage;
+export type ModelResponse = { content: ContentBlock[]; stop_reason?: string | null; usage?: Usage };
 
 export type CallModelAttempt = GenAttempt;
 
 export const MODEL = "claude-sonnet-5";
-const MODELS = [MODEL];
 // Headroom, not a target: a cut-off response costs a retry, unused room costs nothing.
 const MAX_TOKENS = 8000;
 // Per-request ceiling. Callers working to a deadline pass something smaller.
 const REQUEST_TIMEOUT_MS = 90_000;
+const RATE_TRIES = 4;
+
+// maxRetries: 0 on purpose. The SDK would retry inside a single call, and its
+// wall clock is timeout x (maxRetries + 1): at a 90s timeout that is 270s
+// against a 240s pipeline budget. Dividing the timeout instead is not an
+// option, because a measured plan call takes 45s. So the retry policy stays
+// here, where it can report each wait into the attempt log and respect the
+// caller's deadline.
+// fetchOverride exists so tests can drive the transport without a live key or
+// a stubbed global; nothing in the app passes it.
+export function makeClient(fetchOverride?: typeof fetch): Anthropic {
+	return new Anthropic({ apiKey: ANTHROPIC_API_KEY || "missing-key", maxRetries: 0, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
+}
+
+let client = makeClient();
+
+// Test seam: swap the client, and get back a function that restores the real one.
+export function setClientForTests(c: Anthropic): () => void {
+	const prev = client;
+	client = c;
+	return () => { client = prev; };
+}
+
+// The pipeline and the API route both recognise a cancellation by this name,
+// so every abort leaves this module wearing it.
+const cancelled = () => Object.assign(new Error("cancelled"), { name: "AbortError" });
 
 const sleep = (ms: number, signal?: AbortSignal) =>
 	new Promise<void>((res, rej) => {
 		const id = setTimeout(res, ms);
 		signal?.addEventListener("abort", () => { clearTimeout(id); rej(Object.assign(new Error("cancelled"), { name: "AbortError" })); }, { once: true });
 	});
+
+// A cancellation from the caller. The SDK wraps it as APIUserAbortError, whose
+// `name` is a plain "Error", so the usual name check never matches it; without
+// this, pressing Cancel would be recorded as a failed call and the run would
+// carry on instead of stopping.
+function isCancellation(e: unknown): boolean {
+	if (e instanceof Anthropic.APIUserAbortError) return true;
+	return e instanceof Error && e.name === "AbortError";
+}
+
+// Worth another attempt: rate limits, the 5xx family and a dropped connection.
+// A 4xx that is not 429 is a bad request and will fail again identically.
+function retryable(e: unknown): boolean {
+	// A timeout is not. APIConnectionTimeoutError extends APIConnectionError, so
+	// it has to be excluded first or the whole backoff sequence runs again
+	// against a deadline that has already expired: the caller set timeoutMs from
+	// the time it had left, and spending more of it is the opposite of the point.
+	if (e instanceof Anthropic.APIConnectionTimeoutError) return false;
+	if (e instanceof Anthropic.RateLimitError) return true;
+	if (e instanceof Anthropic.APIConnectionError) return true;
+	if (e instanceof Anthropic.APIError && typeof e.status === "number") return e.status >= 500;
+	return false;
+}
+
+// A 200 whose body is not a message. This endpoint has been seen to return one
+// (a gateway error page), and the SDK handles it two ways depending on the
+// response's content-type: with a JSON type it tries to parse and lets the
+// SyntaxError out unwrapped, with any other type it hands back the raw body as
+// though it were the message. Neither is in its retry set, so both are caught
+// here: the throw by isBadBody, the quiet one by looking for the content array.
+function isBadBody(e: unknown): boolean {
+	return e instanceof SyntaxError && !(e instanceof Anthropic.APIError);
+}
+
+class BadBodyError extends Error {
+	constructor(readonly head: string) {
+		super(`response body is not a message (started "${head}")`);
+		this.name = "BadBodyError";
+	}
+}
+
+function assertMessage(res: Anthropic.Message): Anthropic.Message {
+	if (!res || !Array.isArray(res.content)) throw new BadBodyError(String(res ?? "").slice(0, 40));
+	return res;
+}
+
+function describe(e: unknown): string {
+	// A timeout and a dropped connection are both the network failing to deliver
+	// a call, and the pipeline treats them the same way: one empty call, move on.
+	if (e instanceof Anthropic.APIConnectionError) return `network: ${e.message}`;
+	if (e instanceof Anthropic.APIError) {
+		// The SDK's message is the status plus the raw body. The API's own error
+		// message is the readable part, so prefer it when it is there.
+		const body = e.error as { error?: { type?: string; message?: string } } | undefined;
+		const type = body?.error?.type ?? e.name;
+		return `${type}: ${body?.error?.message ?? e.message}`;
+	}
+	return `network: ${e instanceof Error ? e.message : String(e)}`;
+}
 
 interface CallModelOpts {
 	useSearch: boolean;
@@ -64,134 +130,118 @@ interface CallModelOpts {
 }
 
 // One API round trip with the transport handling this endpoint has needed:
-// 429 backoff, a retry when a 200 arrives with its first bytes missing, and
-// pause_turn continuation for long search loops. Records into `a`.
+// backoff on the retryable failures, and pause_turn continuation for long
+// search loops. Records into `a`.
 export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = "off", schema, cachedSystem, timeoutMs = REQUEST_TIMEOUT_MS }: CallModelOpts): Promise<ModelResponse | null> {
-	for (const m of MODELS) {
-		a.model = m;
-		let rateTries = 0;
-		try {
-			const reqBody = (msgs: unknown[]) => JSON.stringify({
-				model: m,
-				max_tokens: MAX_TOKENS,
-				messages: msgs,
-				// The cached block goes in `system`, which renders before `messages`,
-				// so the volatile per-call prompt cannot shift the cached prefix.
-				...(cachedSystem ? { system: [{ type: "text", text: cachedSystem, cache_control: { type: "ephemeral" } }] } : {}),
-				...(thinking === "off" ? { thinking: { type: "disabled" } } : { thinking: { type: "adaptive" } }),
-				// One output_config: effort and format are siblings, and a second
-				// spread of the same key would silently drop the first.
-				...(thinking === "light" || schema
-					? {
-						output_config: {
-							...(thinking === "light" ? { effort: "low" } : {}),
-							...(schema ? { format: { type: "json_schema", schema } } : {})
-						}
-					}
-					: {}),
-				// Basic variant on purpose. web_search_20260209 (dynamic filtering) was
-				// tried on 2026-09-08: it doubled input tokens and tripled write-call
-				// time on this workload, because its filtering runs as extra
-				// code-execution turns whose output also lands in context.
-				...(useSearch ? { tools: [{ type: "web_search_20250305", name: "web_search", max_uses: maxUses }] } : {})
-			});
-			// A hung connection would otherwise block until the platform kills the
-			// whole function, losing every question already written. The timer is
-			// cleared once the request settles, so a finished call leaves nothing
-			// pending: AbortSignal.timeout would keep one alive for the full
-			// duration, and a run makes many requests.
-			const post = async (msgs: unknown[]) => {
-				const timer = new AbortController();
-				const id = timeoutMs > 0 ? setTimeout(() => timer.abort(Object.assign(new Error("request timed out"), { name: "TimeoutError" })), timeoutMs) : null;
-				try {
-					return await fetch("https://api.anthropic.com/v1/messages", {
-						method: "POST",
-						headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-						body: reqBody(msgs),
-						signal: AbortSignal.any([...(signal ? [signal] : []), timer.signal])
-					});
-				} finally {
-					if (id) clearTimeout(id);
+	a.model = MODEL;
+
+	const params: Anthropic.MessageCreateParamsNonStreaming = {
+		model: MODEL,
+		max_tokens: MAX_TOKENS,
+		messages: [{ role: "user", content: prompt }],
+		// The cached block goes in `system`, which renders before `messages`, so
+		// the volatile per-call prompt cannot shift the cached prefix.
+		...(cachedSystem ? { system: [{ type: "text" as const, text: cachedSystem, cache_control: { type: "ephemeral" as const } }] } : {}),
+		...(thinking === "off" ? { thinking: { type: "disabled" as const } } : { thinking: { type: "adaptive" as const } }),
+		// One output_config: effort and format are siblings, and a second spread
+		// of the same key would silently drop the first.
+		...(thinking === "light" || schema
+			? {
+				output_config: {
+					...(thinking === "light" ? { effort: "low" as const } : {}),
+					...(schema ? { format: { type: "json_schema" as const, schema } } : {})
 				}
-			};
-			let messages: unknown[] = [{ role: "user", content: prompt }];
-			let res: Response;
-			while (true) {
-				res = await post(messages);
-				if (res.status !== 429 || rateTries >= 4) break;
-				rateTries += 1;
-				a.rateWaits = rateTries;
-				onStatus(`rate limited, waiting (${rateTries})`);
-				await sleep(1500 * Math.pow(2, rateTries - 1), signal);
 			}
-			a.status = res.status;
-			let rawText = await res.text();
-			let body: Record<string, unknown> | null = null;
-			try { body = JSON.parse(rawText); } catch { body = null; }
-			for (let tCount = 1; tCount <= 2 && res.ok && body === null; tCount++) {
-				a.transportRetry = `body not JSON (started "${rawText.slice(0, 40)}"), retried ${tCount}×`;
-				await sleep(800 * tCount, signal);
-				const res2 = await post(messages);
-				a.status = res2.status;
-				rawText = await res2.text();
-				try { body = JSON.parse(rawText); } catch { body = null; }
-				res = res2;
-			}
-			if (!res.ok || !body || body.type === "error" || !Array.isArray(body.content)) {
-				const err = body?.error as { type?: string; message?: string } | undefined;
-				a.apiError = err ? `${err.type}: ${err.message}` : body === null ? `HTTP ${res.status}, body is not JSON` : `HTTP ${res.status}, JSON has no content array (keys: ${Object.keys(body).join(", ") || "none"})`;
-				a.rawHead = rawText.slice(0, 400);
-				continue;
-			}
-			let pauses = 0;
-			let accumulated = body.content as ContentBlock[];
-			// Each continuation is separately billed, so usage has to be summed
-			// across them: taking only the last body under-reports a paused call.
-			const tally: Usage = { input_tokens: 0, output_tokens: 0 };
-			const addUsage = (u: Usage | undefined) => {
-				if (!u) return;
-				tally.input_tokens += u.input_tokens ?? 0;
-				tally.output_tokens += u.output_tokens ?? 0;
-				if (u.cache_creation_input_tokens) tally.cache_creation_input_tokens = (tally.cache_creation_input_tokens ?? 0) + u.cache_creation_input_tokens;
-				if (u.cache_read_input_tokens) tally.cache_read_input_tokens = (tally.cache_read_input_tokens ?? 0) + u.cache_read_input_tokens;
-				const th = u.output_tokens_details?.thinking_tokens;
-				if (th) tally.output_tokens_details = { thinking_tokens: (tally.output_tokens_details?.thinking_tokens ?? 0) + th };
-				const n = u.server_tool_use?.web_search_requests;
-				if (Number.isFinite(n)) tally.server_tool_use = { web_search_requests: (tally.server_tool_use?.web_search_requests ?? 0) + (n as number) };
-			};
-			addUsage(body.usage as Usage | undefined);
-			while (body.stop_reason === "pause_turn" && pauses < 2) {
-				pauses += 1;
-				a.pauses = pauses;
-				onStatus(`still checking (${pauses})`);
-				messages = [...messages, { role: "assistant", content: body.content }];
-				const resP = await post(messages);
-				const rawP = await resP.text();
-				let bodyP: Record<string, unknown> | null = null;
-				try { bodyP = JSON.parse(rawP); } catch { bodyP = null; }
-				if (!resP.ok || !bodyP || bodyP.type === "error" || !Array.isArray(bodyP.content)) {
-					const err = bodyP?.error as { type?: string; message?: string } | undefined;
-					a.apiError = `continuation after pause_turn failed: ${err ? `${err.type}: ${err.message}` : `HTTP ${resP.status}`}`;
-					break;
+			: {}),
+		// Basic variant on purpose. web_search_20260209 (dynamic filtering) was
+		// tried on 2026-09-08: it doubled input tokens and tripled write-call
+		// time on this workload, because its filtering runs as extra
+		// code-execution turns whose output also lands in context.
+		...(useSearch ? { tools: [{ type: "web_search_20250305" as const, name: "web_search" as const, max_uses: maxUses }] } : {})
+	};
+
+	// Each continuation is separately billed, so usage has to be summed across
+	// them: taking only the last response under-reports a paused call.
+	const tally: Usage = { input_tokens: 0, output_tokens: 0 } as Usage;
+	const addUsage = (u: Usage | undefined) => {
+		if (!u) return;
+		tally.input_tokens += u.input_tokens ?? 0;
+		tally.output_tokens += u.output_tokens ?? 0;
+		if (u.cache_creation_input_tokens) tally.cache_creation_input_tokens = (tally.cache_creation_input_tokens ?? 0) + u.cache_creation_input_tokens;
+		if (u.cache_read_input_tokens) tally.cache_read_input_tokens = (tally.cache_read_input_tokens ?? 0) + u.cache_read_input_tokens;
+		const th = u.output_tokens_details?.thinking_tokens;
+		if (th) tally.output_tokens_details = { thinking_tokens: (tally.output_tokens_details?.thinking_tokens ?? 0) + th };
+		const n = u.server_tool_use?.web_search_requests;
+		if (Number.isFinite(n)) tally.server_tool_use = { ...(tally.server_tool_use ?? { web_fetch_requests: 0, web_search_requests: 0 }), web_search_requests: (tally.server_tool_use?.web_search_requests ?? 0) + (n as number) };
+	};
+
+	// One request, retried on the failures worth retrying. Two separate retry
+	// budgets, because the failures are unrelated: the API-level one (rate
+	// limits, 5xx, dropped connections) and a retry for a 200 whose body is not
+	// JSON. That second case is not in the SDK's retry set and was added here
+	// for a failure actually observed on this endpoint, so it survives the
+	// swap: the SDK surfaces it as a parse error rather than a status code.
+	const send = async (messages: Anthropic.MessageParam[]): Promise<Anthropic.Message> => {
+		let tries = 0, badBody = 0;
+		for (;;) {
+			try {
+				return assertMessage(await client.messages.create({ ...params, messages }, { signal, timeout: timeoutMs, maxRetries: 0 }));
+			} catch (e) {
+				if (isCancellation(e)) throw cancelled();
+				if ((isBadBody(e) || e instanceof BadBodyError) && badBody < 2) {
+					badBody += 1;
+					const head = e instanceof BadBodyError ? e.head : String((e as Error).message).slice(0, 40);
+					a.transportRetry = `body not JSON (started "${head}"), retried ${badBody}×`;
+					await sleep(800 * badBody, signal);
+					continue;
 				}
-				body = bodyP;
-				accumulated = [...accumulated, ...(bodyP.content as ContentBlock[])];
-				addUsage(bodyP.usage as Usage | undefined);
+				if (!retryable(e) || tries >= RATE_TRIES) throw e;
+				tries += 1;
+				a.rateWaits = tries;
+				onStatus(e instanceof Anthropic.RateLimitError ? `rate limited, waiting (${tries})` : `connection trouble, retrying (${tries})`);
+				await sleep(1500 * Math.pow(2, tries - 1), signal);
 			}
-			a.stopReason = (body.stop_reason as string) ?? null;
-			const usage = tally.input_tokens || tally.output_tokens ? tally : undefined;
-			const su = usage?.server_tool_use?.web_search_requests;
-			const cr = usage?.cache_read_input_tokens, cw = usage?.cache_creation_input_tokens;
-			const th = usage?.output_tokens_details?.thinking_tokens ?? 0;
-			a.usage = usage
-				? `${usage.input_tokens} in / ${usage.output_tokens} out${cr ? ` / ${cr} cached` : ""}${cw ? ` / ${cw} cache write` : ""}${th ? ` / ${th} thinking` : ""}${Number.isFinite(su) ? ` / ${su} search${su === 1 ? "" : "es"}` : ""}`
-				: null;
-			if (usage) a.tokens = { input: usage.input_tokens, output: usage.output_tokens, cacheWrite: cw ?? 0, cacheRead: cr ?? 0, thinking: th, searches: Number.isFinite(su) ? (su as number) : 0 };
-			return { content: accumulated, stop_reason: body.stop_reason as string | undefined, usage };
-		} catch (e) {
-			if (e instanceof Error && e.name === "AbortError") throw e;
-			a.apiError = `network: ${e instanceof Error ? e.message : String(e)}`;
 		}
+	};
+
+	try {
+		let res = await send(params.messages as Anthropic.MessageParam[]);
+		a.status = 200;
+		addUsage(res.usage);
+		let accumulated = res.content as ContentBlock[];
+
+		let pauses = 0;
+		let messages = [...(params.messages as Anthropic.MessageParam[])];
+		while (res.stop_reason === "pause_turn" && pauses < 2) {
+			pauses += 1;
+			a.pauses = pauses;
+			onStatus(`still checking (${pauses})`);
+			messages = [...messages, { role: "assistant", content: res.content }];
+			try {
+				res = await send(messages);
+			} catch (e) {
+				if (isCancellation(e)) throw cancelled();
+				a.apiError = `continuation after pause_turn failed: ${describe(e)}`;
+				break;
+			}
+			addUsage(res.usage);
+			accumulated = [...accumulated, ...(res.content as ContentBlock[])];
+		}
+
+		a.stopReason = res.stop_reason ?? null;
+		const usage = tally.input_tokens || tally.output_tokens ? tally : undefined;
+		const su = usage?.server_tool_use?.web_search_requests;
+		const cr = usage?.cache_read_input_tokens, cw = usage?.cache_creation_input_tokens;
+		const th = usage?.output_tokens_details?.thinking_tokens ?? 0;
+		a.usage = usage
+			? `${usage.input_tokens} in / ${usage.output_tokens} out${cr ? ` / ${cr} cached` : ""}${cw ? ` / ${cw} cache write` : ""}${th ? ` / ${th} thinking` : ""}${Number.isFinite(su) ? ` / ${su} search${su === 1 ? "" : "es"}` : ""}`
+			: null;
+		if (usage) a.tokens = { input: usage.input_tokens, output: usage.output_tokens, cacheWrite: cw ?? 0, cacheRead: cr ?? 0, thinking: th, searches: Number.isFinite(su) ? (su as number) : 0 };
+		return { content: accumulated, stop_reason: res.stop_reason, usage };
+	} catch (e) {
+		if (isCancellation(e)) throw cancelled();
+		if (e instanceof Anthropic.APIError && typeof e.status === "number") a.status = e.status;
+		a.apiError = describe(e);
+		return null;
 	}
-	return null;
 }

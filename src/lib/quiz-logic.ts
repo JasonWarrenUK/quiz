@@ -128,10 +128,14 @@ export function salvageQuestions(text: string): SalvageResult {
 	return { members, questions: out, complete: false };
 }
 
+// Structural, not the SDK's type: this module is shared with the client, and
+// importing the SDK here would follow it into the browser bundle. Kept loose
+// enough to accept the SDK's block union, which is a discriminated type whose
+// `input` is `unknown` and whose text-bearing members vary by block.
 interface ContentBlock {
 	type: string;
 	text?: string;
-	input?: { query?: string };
+	input?: unknown;
 	content?: unknown;
 }
 
@@ -145,7 +149,9 @@ interface UnpackedContent {
 // Pull the pieces out of a tool-using response by block type.
 export function unpackContent(content: ContentBlock[]): UnpackedContent {
 	const text = content.filter((b) => b.type === "text").map((b) => b.text || "").join("\n");
-	const searches = content.filter((b) => b.type === "server_tool_use").map((b) => b.input?.query || "(no query)");
+	const searches = content
+		.filter((b) => b.type === "server_tool_use")
+		.map((b) => (b.input as { query?: string } | undefined)?.query || "(no query)");
 	const results = content.filter((b) => b.type === "web_search_tool_result");
 	const toolErrors = results
 		.map((r) => {
