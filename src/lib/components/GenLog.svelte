@@ -23,6 +23,7 @@
 				{#if l.acceptedWithProblems}<span class="accent"> · {l.acceptedWithProblems}</span>{/if}
 				{#if l.fatal}<span class="danger"> · {l.fatal}</span>{/if}
 				{#if l.cancelled}<span class="danger"> · cancelled</span>{/if}
+				{#if l.timedOut}<span class="danger"> · stopped at the time budget; what was written is kept</span>{/if}
 			</div>
 			{#each l.attempts || [] as a, j (j)}
 				<div class="mt-2 pt-2 attempt">

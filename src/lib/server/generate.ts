@@ -57,6 +57,10 @@ const DIFF_PROMPT: Record<Difficulty, string> = {
 const SPARES = 3;
 const BATCH_PLAIN = 5;
 const BATCH_SEARCH = 2;
+// The route's maxDuration is 300s. Stop starting work at 240s so the last call
+// (capped at 90s, and only started if that much remains) plus the final stream
+// flush land inside the ceiling rather than being killed mid-pipeline.
+const BUDGET_MS = 240_000;
 
 export interface FetchBankOpts {
 	onStatus?: (s: string) => void;
@@ -80,6 +84,14 @@ export async function fetchBank(topic: string, k: number, difficulty: Difficulty
 	// Difficulty is fixed for a run, so its prompt belongs here too; the two
 	// concurrent topic workers share this text and so share the cache entry.
 	const cachedSystem = `${BOUNDARY_RULES}\n\n${CRAFT}\n\n${DIFF_PROMPT[difficulty]}`;
+	// The platform kills the function at maxDuration and nothing written so far
+	// survives that. Stop before the ceiling and return a short set instead,
+	// which the UI already handles.
+	const deadline = Date.now() + BUDGET_MS;
+	const timeLeft = () => deadline - Date.now();
+	const outOfTime = () => timeLeft() <= 0;
+	// A call gets whatever is left, capped: never start one that cannot finish.
+	const callTimeout = () => Math.max(0, Math.min(90_000, timeLeft()));
 	const kept: Question[] = existing.slice(); // finished questions
 	let pending: PlanEntry[] = []; // approved plan entries awaiting a question
 	let members: number | null = null, relax = 0;
@@ -134,7 +146,7 @@ Every answer must be a different thing; the same place, person or number under t
 Also give "members", your estimate of how many distinct members the topic has, and "format" as instructed above${log.reading ? "" : ', and "reading" as instructed above'}.
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {${log.reading ? "" : '"reading":{"includes":"...","excludes":"...","answers":"..."},'}"members":<int>,"format":"mixed" or "fixed: <pattern>","plan":[{"member":"...","angle":"...","answer":"...","level":<1-5>,"jargon":<true|false>}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: planSchema(!log.reading), cachedSystem });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: planSchema(!log.reading), cachedSystem, timeoutMs: callTimeout() });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -191,7 +203,7 @@ Entries:
 ${items.map((it, i) => `${i + 1}. member: ${it.subject}; angle: ${it.angle}; answer: ${it.a}; level ${it.level}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"questions":[{"id":<entry number>,"ok":<true|false>,"q":"question text","a":"the answer","alt":["acceptable alternates or empty"]${useSearch ? `,"verified":<true|false>,"source":"title or URL, only when verified"` : ""},"note":"only if ok is false"}]}`;
-		const data = await callModel(prompt, { useSearch, maxUses: items.length * 2, signal, onStatus, a, thinking: "light", cachedSystem });
+		const data = await callModel(prompt, { useSearch, maxUses: items.length * 2, signal, onStatus, a, thinking: "light", cachedSystem, timeoutMs: callTimeout() });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text, searches, toolErrors, resultCount } = unpackContent(data.content || []);
@@ -265,7 +277,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. Q: ${it.q} A: ${it.a}${it.alt?.length ? ` (also: ${it.alt.join(", ")})` : ""}${(it.solverRivals?.length || it.solverDiffers) ? ` | candidates from a blind solver: ${[...(it.solverDiffers ? [it.solverBest] : []), ...(it.solverRivals || [])].filter(Boolean).join("; ")}` : ""}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"constraints":["C1 ...","C2 ..."],"verdicts":[{"id":<number>,"fails":["C2"],"correct":"yes"|"no"|"unsure","countFixed":<true|false|null>,"duplicateOf":<number or null>,"rivals":[{"name":"...","verdict":"same"|"real"|"wrong"}],"why":"twelve words at most, only when something fails"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: JUDGE_SCHEMA, cachedSystem });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: JUDGE_SCHEMA, cachedSystem, timeoutMs: callTimeout() });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -326,7 +338,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. ${it.q}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"solutions":[{"id":<number>,"best":"...","candidates":["..."],"fromWording":<true|false>,"confidence":"high"|"medium"|"low"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "light", schema: SOLVE_SCHEMA, cachedSystem });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "light", schema: SOLVE_SCHEMA, cachedSystem, timeoutMs: callTimeout() });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -375,6 +387,10 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 
 	const maxPlan = 4, maxWrite = Math.ceil(k / initialBatch) + 6, maxEmpty = 4, maxJudge = 3, maxSolve = 3;
 	while (emptyCalls < maxEmpty) {
+		// Call caps bound the work, not the clock. Without this the pipeline can
+		// still be mid-stage when the platform kills the function, which loses
+		// every question already written; stopping here keeps them.
+		if (outOfTime()) { log.timedOut = true; break; }
 		if (kept.length < k) {
 			if (!pending.length) promoteSpares(k - kept.length);
 			if (!pending.length) {
@@ -391,9 +407,10 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		if (kept.some((x) => !x.judged) && judgeCalls < maxJudge) { await judge(); continue; }
 		break;
 	}
-	// If the budget ran out before the checks, run each once more if allowed.
-	if (kept.some((x) => !x.solved) && solveCalls < maxSolve && emptyCalls < maxEmpty) await solve();
-	if (kept.some((x) => !x.judged) && judgeCalls < maxJudge && emptyCalls < maxEmpty) await judge();
+	// If the call budget ran out before the checks, run each once more if allowed
+	// and if the clock still permits it.
+	if (kept.some((x) => !x.solved) && solveCalls < maxSolve && emptyCalls < maxEmpty && !outOfTime()) await solve();
+	if (kept.some((x) => !x.judged) && judgeCalls < maxJudge && emptyCalls < maxEmpty && !outOfTime()) await judge();
 
 	if (difficulty === "Medium" && k >= 3 && kept.length >= 3) {
 		const cnt = (l: number) => kept.filter((x) => x.level === l).length;

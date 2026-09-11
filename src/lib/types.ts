@@ -147,6 +147,9 @@ export interface GenLog {
 	acceptedWithProblems?: string;
 	dropped?: DroppedEntry[];
 	shortfall?: number;
+	// Set when the run stopped against its wall-clock budget rather than
+	// finishing or exhausting its call caps.
+	timedOut?: boolean;
 	// Whole-run token totals, summed from the per-call usage. Per-attempt
 	// figures alone made the cost of a run visible only one call at a time.
 	totals?: RunTotals;
