@@ -1,4 +1,4 @@
-import type { Difficulty, Question, PlanEntry, GenLog, GenAttempt, FetchBankResult, ReadingBlock, DroppedEntry } from "../types";
+import type { Difficulty, Question, PlanEntry, GenLog, GenAttempt, FetchBankResult, ReadingBlock, DroppedEntry, RunTotals } from "../types";
 import { callModel, MODEL } from "./anthropic";
 import { planSchema, SOLVE_SCHEMA, JUDGE_SCHEMA } from "./schemas";
 import {
@@ -392,6 +392,17 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		if (cnt(3) < cnt(2) || cnt(3) < cnt(4)) log.acceptedWithProblems = [log.acceptedWithProblems, `medium set is not mostly level 3 (${cnt(2)}×2, ${cnt(3)}×3, ${cnt(4)}×4)`].filter(Boolean).join("; ");
 	}
 	if (dropped.length) log.dropped = dropped;
+	// Per-attempt usage was already logged; this makes the cost of a whole run
+	// visible in one place, which is what the caching change has to be judged on.
+	log.totals = log.attempts.reduce<RunTotals>((t, x) => ({
+		calls: t.calls + 1,
+		inputTokens: t.inputTokens + (x.tokens?.input ?? 0),
+		outputTokens: t.outputTokens + (x.tokens?.output ?? 0),
+		cacheWriteTokens: t.cacheWriteTokens + (x.tokens?.cacheWrite ?? 0),
+		cacheReadTokens: t.cacheReadTokens + (x.tokens?.cacheRead ?? 0),
+		searches: t.searches + (x.tokens?.searches ?? 0),
+		ms: t.ms + (x.ms ?? 0)
+	}), { calls: 0, inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, searches: 0, ms: 0 });
 	log.shortfall = Math.max(0, k - kept.length);
 	log.finishedAt = new Date().toISOString();
 	onStatus(kept.length >= k ? "done" : kept.length ? `short (${kept.length}/${k})` : "failed");

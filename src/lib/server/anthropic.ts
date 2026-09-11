@@ -8,10 +8,18 @@ export interface ContentBlock {
 	content?: unknown;
 }
 
+export interface Usage {
+	input_tokens: number;
+	output_tokens: number;
+	cache_creation_input_tokens?: number;
+	cache_read_input_tokens?: number;
+	server_tool_use?: { web_search_requests?: number };
+}
+
 export interface ModelResponse {
 	content: ContentBlock[];
 	stop_reason?: string;
-	usage?: { input_tokens: number; output_tokens: number; server_tool_use?: { web_search_requests?: number } };
+	usage?: Usage;
 }
 
 export type CallModelAttempt = GenAttempt;
@@ -117,6 +125,19 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 			}
 			let pauses = 0;
 			let accumulated = body.content as ContentBlock[];
+			// Each continuation is separately billed, so usage has to be summed
+			// across them: taking only the last body under-reports a paused call.
+			const tally: Usage = { input_tokens: 0, output_tokens: 0 };
+			const addUsage = (u: Usage | undefined) => {
+				if (!u) return;
+				tally.input_tokens += u.input_tokens ?? 0;
+				tally.output_tokens += u.output_tokens ?? 0;
+				if (u.cache_creation_input_tokens) tally.cache_creation_input_tokens = (tally.cache_creation_input_tokens ?? 0) + u.cache_creation_input_tokens;
+				if (u.cache_read_input_tokens) tally.cache_read_input_tokens = (tally.cache_read_input_tokens ?? 0) + u.cache_read_input_tokens;
+				const n = u.server_tool_use?.web_search_requests;
+				if (Number.isFinite(n)) tally.server_tool_use = { web_search_requests: (tally.server_tool_use?.web_search_requests ?? 0) + (n as number) };
+			};
+			addUsage(body.usage as Usage | undefined);
 			while (body.stop_reason === "pause_turn" && pauses < 2) {
 				pauses += 1;
 				a.pauses = pauses;
@@ -133,11 +154,16 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 				}
 				body = bodyP;
 				accumulated = [...accumulated, ...(bodyP.content as ContentBlock[])];
+				addUsage(bodyP.usage as Usage | undefined);
 			}
 			a.stopReason = (body.stop_reason as string) ?? null;
-			const usage = body.usage as { input_tokens: number; output_tokens: number; server_tool_use?: { web_search_requests?: number } } | undefined;
+			const usage = tally.input_tokens || tally.output_tokens ? tally : undefined;
 			const su = usage?.server_tool_use?.web_search_requests;
-			a.usage = usage ? `${usage.input_tokens} in / ${usage.output_tokens} out${Number.isFinite(su) ? ` / ${su} search${su === 1 ? "" : "es"}` : ""}` : null;
+			const cr = usage?.cache_read_input_tokens, cw = usage?.cache_creation_input_tokens;
+			a.usage = usage
+				? `${usage.input_tokens} in / ${usage.output_tokens} out${cr ? ` / ${cr} cached` : ""}${cw ? ` / ${cw} cache write` : ""}${Number.isFinite(su) ? ` / ${su} search${su === 1 ? "" : "es"}` : ""}`
+				: null;
+			if (usage) a.tokens = { input: usage.input_tokens, output: usage.output_tokens, cacheWrite: cw ?? 0, cacheRead: cr ?? 0, searches: Number.isFinite(su) ? (su as number) : 0 };
 			return { content: accumulated, stop_reason: body.stop_reason as string | undefined, usage };
 		} catch (e) {
 			if (e instanceof Error && e.name === "AbortError") throw e;

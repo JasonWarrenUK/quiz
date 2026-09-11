@@ -99,6 +99,9 @@ export interface GenAttempt {
 	apiError: string | null;
 	stopReason: string | null;
 	usage: string | null;
+	// The same figures unformatted, so a run can be totalled without reparsing
+	// the display string.
+	tokens?: { input: number; output: number; cacheWrite: number; cacheRead: number; searches: number };
 	rawHead: string | null;
 	parse: string | null;
 	validation: string | null;
@@ -114,6 +117,18 @@ export interface GenAttempt {
 	spareNote?: string;
 	transportRetry?: string;
 	subjects?: string[];
+}
+
+export interface RunTotals {
+	calls: number;
+	inputTokens: number;
+	outputTokens: number;
+	// Cache writes cost ~1.25x and reads ~0.1x of base input price, so the two
+	// are tracked apart from plain input tokens.
+	cacheWriteTokens: number;
+	cacheReadTokens: number;
+	searches: number;
+	ms: number;
 }
 
 export interface GenLog {
@@ -132,6 +147,9 @@ export interface GenLog {
 	acceptedWithProblems?: string;
 	dropped?: DroppedEntry[];
 	shortfall?: number;
+	// Whole-run token totals, summed from the per-call usage. Per-attempt
+	// figures alone made the cost of a run visible only one call at a time.
+	totals?: RunTotals;
 	fatal?: string;
 	cancelled?: boolean;
 	reused?: boolean;

@@ -172,7 +172,35 @@ describe("callModel transport", () => {
 
 		const res = await run(callModel("p", opts(a)));
 
-		expect(res?.usage).toEqual({ input_tokens: 10, output_tokens: 5 });
+		expect(res?.usage?.input_tokens).toBe(10);
+		expect(res?.usage?.output_tokens).toBe(5);
 		expect(a.usage).toContain("10 in / 5 out");
+		expect(a.tokens).toMatchObject({ input: 10, output: 5 });
+	});
+
+	it("sums usage across pause_turn continuations rather than keeping only the last", async () => {
+		fetchMock
+			.mockResolvedValueOnce(ok(msg("first", { stop_reason: "pause_turn" })))
+			.mockResolvedValueOnce(ok(msg("second")));
+		const a = attempt();
+
+		const res = await run(callModel("p", opts(a, { useSearch: true, maxUses: 4 })));
+
+		// Both turns are billed: 10+10 in, 5+5 out.
+		expect(res?.usage?.input_tokens).toBe(20);
+		expect(res?.usage?.output_tokens).toBe(10);
+		expect(a.tokens).toMatchObject({ input: 20, output: 10 });
+	});
+
+	it("reports cache reads and writes so caching can be verified", async () => {
+		fetchMock.mockResolvedValueOnce(
+			ok(msg("hi", { usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 1337, cache_read_input_tokens: 0 } }))
+		);
+		const a = attempt();
+
+		await run(callModel("p", opts(a)));
+
+		expect(a.tokens).toMatchObject({ cacheWrite: 1337, cacheRead: 0 });
+		expect(a.usage).toContain("1337 cache write");
 	});
 });
