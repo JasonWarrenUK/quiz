@@ -92,14 +92,25 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 				// code-execution turns whose output also lands in context.
 				...(useSearch ? { tools: [{ type: "web_search_20250305", name: "web_search", max_uses: maxUses }] } : {})
 			});
-			const post = (msgs: unknown[]) => fetch("https://api.anthropic.com/v1/messages", {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-				body: reqBody(msgs),
-				// A hung connection would otherwise block until the platform kills
-				// the whole function, losing every question already written.
-				signal: timeoutMs > 0 ? AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]) : signal
-			});
+			// A hung connection would otherwise block until the platform kills the
+			// whole function, losing every question already written. The timer is
+			// cleared once the request settles, so a finished call leaves nothing
+			// pending: AbortSignal.timeout would keep one alive for the full
+			// duration, and a run makes many requests.
+			const post = async (msgs: unknown[]) => {
+				const timer = new AbortController();
+				const id = timeoutMs > 0 ? setTimeout(() => timer.abort(Object.assign(new Error("request timed out"), { name: "TimeoutError" })), timeoutMs) : null;
+				try {
+					return await fetch("https://api.anthropic.com/v1/messages", {
+						method: "POST",
+						headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+						body: reqBody(msgs),
+						signal: AbortSignal.any([...(signal ? [signal] : []), timer.signal])
+					});
+				} finally {
+					if (id) clearTimeout(id);
+				}
+			};
 			let messages: unknown[] = [{ role: "user", content: prompt }];
 			let res: Response;
 			while (true) {

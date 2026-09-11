@@ -138,18 +138,72 @@ describe("callModel transport", () => {
 		expect(a.apiError).toContain("invalid_request_error: bad");
 	});
 
-	it("passes an abort signal that fires on the request timeout", async () => {
-		// AbortSignal.timeout runs on the real event loop, which vitest's fake
-		// timers do not drive, so this one case uses real ones and a short wait.
+	it("aborts a request that outlives its timeout", async () => {
+		// The timer runs on the real event loop, so this case uses real timers.
+		vi.useRealTimers();
+		// A request that never settles on its own: only the timeout can end it.
+		fetchMock.mockImplementation(
+			(_url: string, init: { signal: AbortSignal }) =>
+				new Promise((_res, rej) => {
+					init.signal.addEventListener("abort", () => rej(init.signal.reason), { once: true });
+				})
+		);
+		const a = attempt();
+
+		const res = await callModel("p", opts(a, { timeoutMs: 20 }));
+
+		expect(res).toBeNull();
+		expect(a.apiError).toContain("network");
+	});
+
+	it("clears the timeout once a request settles, leaving no pending timer", async () => {
+		// AbortSignal.timeout would keep a timer alive for the full duration on
+		// every request; a run makes many, so the timer is cleared on completion.
 		vi.useRealTimers();
 		fetchMock.mockResolvedValueOnce(ok(msg("x")));
+
 		await callModel("p", opts(attempt(), { timeoutMs: 20 }));
 
 		const sent = fetchMock.mock.calls[0][1].signal as AbortSignal;
-		expect(sent).toBeInstanceOf(AbortSignal);
 		expect(sent.aborted).toBe(false);
 		await new Promise((r) => setTimeout(r, 50));
-		expect(sent.aborted).toBe(true);
+		// Past the timeout, and still not aborted: the timer was cleared.
+		expect(sent.aborted).toBe(false);
+	});
+
+	it("still propagates a caller cancellation through the combined signal", async () => {
+		// AbortSignal.any keeps the distinction: a caller abort stays AbortError
+		// and must propagate, while a timeout is TimeoutError and is recorded.
+		// If these were conflated, pressing Cancel would look like a failed call
+		// and the run would carry on.
+		const caller = new AbortController();
+		// What fetch throws when the caller's half of the combined signal fires.
+		fetchMock.mockImplementation(async () => {
+			throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+		});
+		const a = attempt();
+
+		// Attach the rejection handler before draining timers, so the rejection
+		// is never momentarily unhandled.
+		const call = callModel("p", opts(a, { signal: caller.signal, timeoutMs: 90_000 }));
+		const assertion = expect(call).rejects.toMatchObject({ name: "AbortError" });
+		await vi.runAllTimersAsync();
+		await assertion;
+		// A cancellation propagates; it is not recorded as a failed call.
+		expect(a.apiError).toBeNull();
+	});
+
+	it("keeps caller cancellation and timeout distinguishable in the combined signal", async () => {
+		// The two must not be conflated: AbortError propagates and ends the run,
+		// TimeoutError is a failed call the pipeline records and moves past.
+		// Both arms are plain controllers here, matching what callModel builds.
+		const caller = new AbortController();
+		const timer = new AbortController();
+		const combined = AbortSignal.any([caller.signal, timer.signal]);
+
+		caller.abort(Object.assign(new Error("cancelled"), { name: "AbortError" }));
+
+		expect(combined.reason?.name).toBe("AbortError");
 	});
 
 	it("treats a timeout abort as a network error rather than a cancellation", async () => {
