@@ -138,6 +138,34 @@ describe("callModel transport", () => {
 		expect(a.apiError).toContain("invalid_request_error: bad");
 	});
 
+	it("passes an abort signal that fires on the request timeout", async () => {
+		// AbortSignal.timeout runs on the real event loop, which vitest's fake
+		// timers do not drive, so this one case uses real ones and a short wait.
+		vi.useRealTimers();
+		fetchMock.mockResolvedValueOnce(ok(msg("x")));
+		await callModel("p", opts(attempt(), { timeoutMs: 20 }));
+
+		const sent = fetchMock.mock.calls[0][1].signal as AbortSignal;
+		expect(sent).toBeInstanceOf(AbortSignal);
+		expect(sent.aborted).toBe(false);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(sent.aborted).toBe(true);
+	});
+
+	it("treats a timeout abort as a network error rather than a cancellation", async () => {
+		// A caller cancellation must propagate, but a timeout is a failed call
+		// that the pipeline records and moves past.
+		fetchMock.mockImplementation(async () => {
+			throw Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
+		});
+		const a = attempt();
+
+		const res = await run(callModel("p", opts(a, { timeoutMs: 1000 })));
+
+		expect(res).toBeNull();
+		expect(a.apiError).toContain("network");
+	});
+
 	it("records token usage from the response", async () => {
 		fetchMock.mockResolvedValueOnce(ok(msg("hi")));
 		const a = attempt();
