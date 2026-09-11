@@ -14,10 +14,12 @@ import {
 	numericValue
 } from "../quiz-logic";
 
-const BOUNDARY = (topic: string, others: string[]) => `The topic is: "${topic}".
-Treat the topic as a boundary, not a theme. Read it the way the person who typed it meant it: a short, specific topic is a specification, and every question must sit inside it.
+// The half of the boundary rules that never varies. Sent once as a cached
+// system block; the topic-specific half stays in the per-call prompt, because
+// caching is a prefix match and a topic at the top would defeat it.
+const BOUNDARY_RULES = `Treat the topic as a boundary, not a theme. Read it the way the person who typed it meant it: a short, specific topic is a specification, and every question must sit inside it.
 The test is the ANSWER, not the question. If the answer is a thing, person, place, date, term or number that belongs to the topic itself, the question is in. If the question merely mentions the topic on the way to an answer from a neighbouring subject, it is out. A question that names the topic and then asks who designed it, what happened next door, or which wider movement it belonged to is out, because the answer lives outside the topic.
-Never widen a narrow topic to find variety.${others.length ? `\nOther players' topics in this same quiz, which your questions must not stray into and must not duplicate: ${others.map((o) => `"${o}"`).join(", ")}. Where this topic and one of those overlap, stay on the part that is only this topic.` : ""}
+Never widen a narrow topic to find variety.
 
 Read the topic in the present tense unless it names a period or is inherently historical. A topic phrased as a thing (a drink, a cuisine, a sport, a craft, a city, a species) means that thing as it exists now: how it is made or done, what it is like, where it is found, what varieties and terms it has, who and what are associated with it today. Origins and history are one strand among several, not the default. Unless the topic names a period, no more than a quarter of the questions may be about how the topic began, who founded or invented it, or what it used to be.
 
@@ -25,6 +27,9 @@ Decide how many distinct members the topic has: people, works, events, places, t
 If the topic has at least as many members as questions, each question must be about a different member. Distribute across the whole span, not the most famous or best-documented members.
 If the topic has fewer members than questions, spread the questions across the members as evenly as you can, and vary what is asked about each.
 Every answer in the set must be a different thing. Two questions whose answers are the same place, person, term or number under different names are one question asked twice.`;
+
+// The topic-specific half: what changes per call, kept out of the cached block.
+const BOUNDARY = (topic: string, others: string[]) => `The topic is: "${topic}".${others.length ? `\nOther players' topics in this same quiz, which your questions must not stray into and must not duplicate: ${others.map((o) => `"${o}"`).join(", ")}. Where this topic and one of those overlap, stay on the part that is only this topic.` : ""}`;
 
 const CRAFT = `What makes a question worth asking:
 - It gives a foothold proportionate to the difficulty. At easy, most of the table should be able to reason towards it. At hard, a narrow route in is enough, and only the enthusiast needs to be able to find it. At no level should a question be a bare memory test with no route in at all.
@@ -70,6 +75,11 @@ export interface FetchBankOpts {
 export async function fetchBank(topic: string, k: number, difficulty: Difficulty, opts: FetchBankOpts = {}): Promise<FetchBankResult> {
 	const { onStatus = () => {}, useSearch = true, signal, otherTopics = [], existing = [], format = "" } = opts;
 	const log: GenLog = { topic, difficulty, attempts: [], search: useSearch, format: format || null, startedAt: new Date().toISOString() };
+	// Everything identical across every call in this run, sent once as a cached
+	// system block instead of being re-billed at full rate on each of them.
+	// Difficulty is fixed for a run, so its prompt belongs here too; the two
+	// concurrent topic workers share this text and so share the cache entry.
+	const cachedSystem = `${BOUNDARY_RULES}\n\n${CRAFT}\n\n${DIFF_PROMPT[difficulty]}`;
 	const kept: Question[] = existing.slice(); // finished questions
 	let pending: PlanEntry[] = []; // approved plan entries awaiting a question
 	let members: number | null = null, relax = 0;
@@ -105,9 +115,9 @@ includes: ${log.reading.includes}
 excludes: ${log.reading.excludes}
 every answer must be: ${log.reading.answers}`
 			: `FIRST, READ THE TOPIC AS A SPECIFICATION. Before planning anything, restate it in three lines as "reading": what it includes, what it explicitly or implicitly excludes (a parenthetical, a range, a qualifier, a "not ..." is a hard exclusion), and what kind of thing every answer must be (a branch, a person, a place, a term...). The reading describes the topic as typed and nothing else: not this call, not the questions already written. Plan only inside that reading. If the topic says "branches, not individual languages", no answer may be a language and no question may turn on one.`;
+		// The difficulty table, the boundary rules and the craft notes arrive in
+		// the cached system block; only what varies per call is repeated here.
 		const prompt = `PLAN a quiz round. Do not write the questions yet.
-${DIFF_PROMPT[difficulty]}
-
 ${BOUNDARY(topic, otherTopics)}
 
 ${readingBlock}
@@ -124,7 +134,7 @@ Every answer must be a different thing; the same place, person or number under t
 Also give "members", your estimate of how many distinct members the topic has, and "format" as instructed above${log.reading ? "" : ', and "reading" as instructed above'}.
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {${log.reading ? "" : '"reading":{"includes":"...","excludes":"...","answers":"..."},'}"members":<int>,"format":"mixed" or "fixed: <pattern>","plan":[{"member":"...","angle":"...","answer":"...","level":<1-5>,"jargon":<true|false>}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: planSchema(!log.reading) });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: planSchema(!log.reading), cachedSystem });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -164,12 +174,10 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		const a = newAttempt("write", items.length);
 		if (spareNote) { a.spareNote = spareNote; spareNote = null; }
 		onStatus(`writing (${kept.length}/${k})`);
+		// As in plan(): difficulty, boundary rules and craft come from the cached
+		// system block, so only the topic and the entries are repeated per call.
 		const prompt = `WRITE quiz questions for a plan that has already been approved.
-${DIFF_PROMPT[difficulty]}
-
 ${BOUNDARY(topic, otherTopics)}
-
-${CRAFT}
 
 ${log.reading ? `THE READING OF THE TOPIC for this round:
 includes: ${log.reading.includes}
@@ -183,7 +191,7 @@ Entries:
 ${items.map((it, i) => `${i + 1}. member: ${it.subject}; angle: ${it.angle}; answer: ${it.a}; level ${it.level}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"questions":[{"id":<entry number>,"ok":<true|false>,"q":"question text","a":"the answer","alt":["acceptable alternates or empty"]${useSearch ? `,"verified":<true|false>,"source":"title or URL, only when verified"` : ""},"note":"only if ok is false"}]}`;
-		const data = await callModel(prompt, { useSearch, maxUses: items.length * 2, signal, onStatus, a, thinking: "light" });
+		const data = await callModel(prompt, { useSearch, maxUses: items.length * 2, signal, onStatus, a, thinking: "light", cachedSystem });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text, searches, toolErrors, resultCount } = unpackContent(data.content || []);
@@ -257,7 +265,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. Q: ${it.q} A: ${it.a}${it.alt?.length ? ` (also: ${it.alt.join(", ")})` : ""}${(it.solverRivals?.length || it.solverDiffers) ? ` | candidates from a blind solver: ${[...(it.solverDiffers ? [it.solverBest] : []), ...(it.solverRivals || [])].filter(Boolean).join("; ")}` : ""}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"constraints":["C1 ...","C2 ..."],"verdicts":[{"id":<number>,"fails":["C2"],"correct":"yes"|"no"|"unsure","countFixed":<true|false|null>,"duplicateOf":<number or null>,"rivals":[{"name":"...","verdict":"same"|"real"|"wrong"}],"why":"twelve words at most, only when something fails"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: JUDGE_SCHEMA });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: JUDGE_SCHEMA, cachedSystem });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -318,7 +326,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. ${it.q}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"solutions":[{"id":<number>,"best":"...","candidates":["..."],"fromWording":<true|false>,"confidence":"high"|"medium"|"low"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "light", schema: SOLVE_SCHEMA });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "light", schema: SOLVE_SCHEMA, cachedSystem });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);

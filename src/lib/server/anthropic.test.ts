@@ -198,9 +198,57 @@ describe("callModel transport", () => {
 		);
 		const a = attempt();
 
-		await run(callModel("p", opts(a)));
+		await run(callModel("p", opts(a, { cachedSystem: "stable rules" })));
 
 		expect(a.tokens).toMatchObject({ cacheWrite: 1337, cacheRead: 0 });
 		expect(a.usage).toContain("1337 cache write");
+	});
+});
+
+describe("callModel request shape", () => {
+	const bodyOf = () => JSON.parse(fetchMock.mock.calls[0][1].body as string);
+
+	it("disables thinking explicitly rather than by omission", async () => {
+		// On Sonnet 5 an omitted `thinking` runs adaptive, so "off" has to be sent.
+		fetchMock.mockResolvedValueOnce(ok(msg("x")));
+		await run(callModel("p", opts(attempt(), { thinking: "off" })));
+
+		expect(bodyOf().thinking).toEqual({ type: "disabled" });
+	});
+
+	it("sends adaptive thinking at low effort for light calls", async () => {
+		fetchMock.mockResolvedValueOnce(ok(msg("x")));
+		await run(callModel("p", opts(attempt(), { thinking: "light" })));
+
+		const body = bodyOf();
+		expect(body.thinking).toEqual({ type: "adaptive" });
+		expect(body.output_config.effort).toBe("low");
+	});
+
+	it("keeps effort and schema in one output_config", async () => {
+		// Two spreads of the same key would silently drop the first.
+		fetchMock.mockResolvedValueOnce(ok(msg("x")));
+		const schema = { type: "object", properties: {}, required: [], additionalProperties: false };
+		await run(callModel("p", opts(attempt(), { thinking: "light", schema })));
+
+		const body = bodyOf();
+		expect(body.output_config.effort).toBe("low");
+		expect(body.output_config.format).toEqual({ type: "json_schema", schema });
+	});
+
+	it("sends the stable text as a cached system block", async () => {
+		fetchMock.mockResolvedValueOnce(ok(msg("x")));
+		await run(callModel("p", opts(attempt(), { cachedSystem: "stable rules" })));
+
+		expect(bodyOf().system).toEqual([
+			{ type: "text", text: "stable rules", cache_control: { type: "ephemeral" } }
+		]);
+	});
+
+	it("omits system entirely when there is nothing to cache", async () => {
+		fetchMock.mockResolvedValueOnce(ok(msg("x")));
+		await run(callModel("p", opts(attempt())));
+
+		expect(bodyOf().system).toBeUndefined();
 	});
 });

@@ -52,6 +52,9 @@ interface CallModelOpts {
 	thinking?: "deep" | "light" | "off";
 	// JSON schema for structured output; the response text is then guaranteed to parse.
 	schema?: Record<string, unknown>;
+	// Text that is identical across calls in a run, sent as a cached system
+	// block so it is not re-billed at full rate on every call.
+	cachedSystem?: string;
 	// Wall-clock ceiling for this call, so one hung request cannot eat the whole
 	// serverless budget. The caller trims it to whatever remains of the deadline.
 	timeoutMs?: number;
@@ -60,7 +63,7 @@ interface CallModelOpts {
 // One API round trip with the transport handling this endpoint has needed:
 // 429 backoff, a retry when a 200 arrives with its first bytes missing, and
 // pause_turn continuation for long search loops. Records into `a`.
-export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = "off", schema, timeoutMs = REQUEST_TIMEOUT_MS }: CallModelOpts): Promise<ModelResponse | null> {
+export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = "off", schema, cachedSystem, timeoutMs = REQUEST_TIMEOUT_MS }: CallModelOpts): Promise<ModelResponse | null> {
 	for (const m of MODELS) {
 		a.model = m;
 		let rateTries = 0;
@@ -69,6 +72,9 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 				model: m,
 				max_tokens: MAX_TOKENS,
 				messages: msgs,
+				// The cached block goes in `system`, which renders before `messages`,
+				// so the volatile per-call prompt cannot shift the cached prefix.
+				...(cachedSystem ? { system: [{ type: "text", text: cachedSystem, cache_control: { type: "ephemeral" } }] } : {}),
 				...(thinking === "off" ? { thinking: { type: "disabled" } } : { thinking: { type: "adaptive" } }),
 				// One output_config: effort and format are siblings, and a second
 				// spread of the same key would silently drop the first.
