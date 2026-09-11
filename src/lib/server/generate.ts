@@ -210,9 +210,17 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		if (useSearch) { a.searches = searches.length ? `${searches.length} (${searches.map((q) => `"${q}"`).join(", ")}) → ${resultCount} results` : "none run"; if (toolErrors.length) a.toolErrors = toolErrors.join(", "); }
 		const { obj, complete } = parseObject(text, "questions");
 		const qs: Record<string, unknown>[] = Array.isArray(obj.questions) ? obj.questions : [];
-		const cutOff = data.stop_reason === "max_tokens";
-		a.parse = complete ? `ok (${qs.length} returned)` : cutOff ? `salvaged ${qs.length} from a response cut off at the token limit` : `partial: ${qs.length} recovered from a response that was not valid JSON`;
-		if (cutOff) { const nb = Math.max(1, Math.min(batch - 1, qs.length || 1)); if (nb !== batch) { a.batchNote = `batch ${batch} → ${nb} (cut off)`; batch = nb; } }
+		// Two ways a write call ends early with the JSON unfinished: the token
+		// limit, and a search loop still paused after its continuations ran out.
+		// Both leave a truncated response, and both want the same answer, a
+		// smaller batch: maxUses scales with batch, so fewer entries means fewer
+		// searches and less chance of pausing out again.
+		const hitTokens = data.stop_reason === "max_tokens";
+		const stillPaused = data.stop_reason === "pause_turn";
+		const cutOff = hitTokens || stillPaused;
+		const cutNote = hitTokens ? "cut off at the token limit" : "cut off with its searches unfinished";
+		a.parse = complete ? `ok (${qs.length} returned)` : cutOff ? `salvaged ${qs.length} from a response ${cutNote}` : `partial: ${qs.length} recovered from a response that was not valid JSON`;
+		if (cutOff) { const nb = Math.max(1, Math.min(batch - 1, qs.length || 1)); if (nb !== batch) { a.batchNote = `batch ${batch} → ${nb} (${hitTokens ? "cut off" : "searches unfinished"})`; batch = nb; } }
 		else if (complete && batch < initialBatch) { a.batchNote = `batch ${batch} → ${batch + 1} (clean call)`; batch += 1; }
 		if (!qs.length) { a.rawHead = text.slice(0, 400); return; }
 

@@ -137,3 +137,73 @@ describe("fetchBank prompt assembly", () => {
 		expect(blocks.size).toBe(1);
 	});
 });
+
+describe("write() handling of an unfinished search loop", () => {
+	// A response still paused after its continuations ran out has a truncated
+	// body, exactly like one that hit the token limit. Before this, only
+	// max_tokens was recognised, so an exhausted pause was reported as invalid
+	// JSON and the batch never shrank in response.
+	const pausedWrite = (n: number) => ({
+		content: [{ type: "text", text: `{"questions":[${Array.from({ length: n }, (_, i) => `{"id":${i + 1},"ok":true,"q":"Q${i + 1}?","a":"A${i + 1}","alt":[]}`).join(",")}` }],
+		stop_reason: "pause_turn",
+		usage: { input_tokens: 10, output_tokens: 5 }
+	});
+
+	it("treats an exhausted pause as a cut-off rather than bad JSON", async () => {
+		let call = 0;
+		callModel.mockImplementation(async (_p: string, o: { a: Record<string, unknown>; useSearch: boolean }) => {
+			call += 1;
+			if (!o.useSearch && call === 1) {
+				return {
+					content: [{ type: "text", text: JSON.stringify({
+						reading: { includes: "a", excludes: "b", answers: "c" },
+						members: 50,
+						format: "mixed",
+						plan: Array.from({ length: 5 }, (_, i) => ({ member: `M${i + 1}`, angle: `angle ${i + 1}`, answer: `A${i + 1}`, level: 3, jargon: false }))
+					}) }],
+					stop_reason: "end_turn",
+					usage: { input_tokens: 10, output_tokens: 5 }
+				};
+			}
+			return pausedWrite(1);
+		});
+
+		const p = fetchBank("Topic", 2, "Medium", { useSearch: true });
+		await vi.runAllTimersAsync();
+		const { log } = await p;
+
+		const writes = log.attempts.filter((x) => x.stage === "write");
+		expect(writes.length).toBeGreaterThan(0);
+		// Reported as a cut-off, naming the unfinished searches as the cause.
+		expect(writes[0].parse).toContain("searches unfinished");
+		expect(writes[0].parse).not.toContain("not valid JSON");
+	});
+
+	it("shrinks the batch when a write pauses out, so fewer searches are asked for", async () => {
+		let call = 0;
+		callModel.mockImplementation(async (_p: string, o: { useSearch: boolean }) => {
+			call += 1;
+			if (call === 1) {
+				return {
+					content: [{ type: "text", text: JSON.stringify({
+						reading: { includes: "a", excludes: "b", answers: "c" },
+						members: 50,
+						format: "mixed",
+						plan: Array.from({ length: 8 }, (_, i) => ({ member: `M${i + 1}`, angle: `angle ${i + 1}`, answer: `A${i + 1}`, level: 3, jargon: false }))
+					}) }],
+					stop_reason: "end_turn",
+					usage: { input_tokens: 10, output_tokens: 5 }
+				};
+			}
+			return pausedWrite(1);
+		});
+
+		const p = fetchBank("Topic", 5, "Medium", { useSearch: true });
+		await vi.runAllTimersAsync();
+		const { log } = await p;
+
+		const shrank = log.attempts.find((x) => x.stage === "write" && x.batchNote);
+		expect(shrank?.batchNote).toContain("searches unfinished");
+		expect(shrank?.batchNote).toContain("2 → 1");
+	});
+});
