@@ -7,6 +7,9 @@ import type { Question } from "$lib/types";
 // One request runs a topic's whole pipeline (plan, write with search, solve,
 // judge), which takes minutes. Vercel's default function duration is far
 // shorter and would cut the stream off mid-pipeline.
+// BUDGET_MS in generate.ts is set against this number and must move with it:
+// the pipeline stops itself 60s early so a run ends with a result rather than
+// being killed. Raising this without raising that just wastes the extra time.
 export const config: Config = { maxDuration: 300 };
 
 const Short = z.string().max(200);
