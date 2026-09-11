@@ -124,7 +124,7 @@ Every answer must be a different thing; the same place, person or number under t
 Also give "members", your estimate of how many distinct members the topic has, and "format" as instructed above${log.reading ? "" : ', and "reading" as instructed above'}.
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {${log.reading ? "" : '"reading":{"includes":"...","excludes":"...","answers":"..."},'}"members":<int>,"format":"mixed" or "fixed: <pattern>","plan":[{"member":"...","angle":"...","answer":"...","level":<1-5>,"jargon":<true|false>}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: true, schema: planSchema(!log.reading) });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: planSchema(!log.reading) });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -183,7 +183,7 @@ Entries:
 ${items.map((it, i) => `${i + 1}. member: ${it.subject}; angle: ${it.angle}; answer: ${it.a}; level ${it.level}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"questions":[{"id":<entry number>,"ok":<true|false>,"q":"question text","a":"the answer","alt":["acceptable alternates or empty"]${useSearch ? `,"verified":<true|false>,"source":"title or URL, only when verified"` : ""},"note":"only if ok is false"}]}`;
-		const data = await callModel(prompt, { useSearch, maxUses: items.length * 2, signal, onStatus, a });
+		const data = await callModel(prompt, { useSearch, maxUses: items.length * 2, signal, onStatus, a, thinking: "light" });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text, searches, toolErrors, resultCount } = unpackContent(data.content || []);
@@ -257,7 +257,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. Q: ${it.q} A: ${it.a}${it.alt?.length ? ` (also: ${it.alt.join(", ")})` : ""}${(it.solverRivals?.length || it.solverDiffers) ? ` | candidates from a blind solver: ${[...(it.solverDiffers ? [it.solverBest] : []), ...(it.solverRivals || [])].filter(Boolean).join("; ")}` : ""}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"constraints":["C1 ...","C2 ..."],"verdicts":[{"id":<number>,"fails":["C2"],"correct":"yes"|"no"|"unsure","countFixed":<true|false|null>,"duplicateOf":<number or null>,"rivals":[{"name":"...","verdict":"same"|"real"|"wrong"}],"why":"twelve words at most, only when something fails"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: true, schema: JUDGE_SCHEMA });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: JUDGE_SCHEMA });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -318,7 +318,7 @@ Questions:
 ${items.map((it, i) => `${i + 1}. ${it.q}`).join("\n")}
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 {"solutions":[{"id":<number>,"best":"...","candidates":["..."],"fromWording":<true|false>,"confidence":"high"|"medium"|"low"}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, schema: SOLVE_SCHEMA });
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "light", schema: SOLVE_SCHEMA });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);

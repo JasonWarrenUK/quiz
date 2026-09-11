@@ -33,8 +33,13 @@ interface CallModelOpts {
 	signal?: AbortSignal;
 	onStatus: (s: string) => void;
 	a: CallModelAttempt;
-	// Adaptive thinking: on for the calls that reason (plan, judge), off for the rest.
-	thinking?: boolean;
+	// Thinking depth. On Sonnet 5 omitting `thinking` runs adaptive thinking, so
+	// a cheap call has to opt out explicitly rather than by omission. "deep" is
+	// adaptive at default effort for the calls that reason (plan, judge);
+	// "light" is adaptive at low effort; "off" disables it outright.
+	// Write stays on "light" rather than "off": Sonnet 5 reaches for tools less
+	// readily with thinking disabled, and write is the call carrying search.
+	thinking?: "deep" | "light" | "off";
 	// JSON schema for structured output; the response text is then guaranteed to parse.
 	schema?: Record<string, unknown>;
 }
@@ -42,7 +47,7 @@ interface CallModelOpts {
 // One API round trip with the transport handling this endpoint has needed:
 // 429 backoff, a retry when a 200 arrives with its first bytes missing, and
 // pause_turn continuation for long search loops. Records into `a`.
-export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = false, schema }: CallModelOpts): Promise<ModelResponse | null> {
+export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = "off", schema }: CallModelOpts): Promise<ModelResponse | null> {
 	for (const m of MODELS) {
 		a.model = m;
 		let rateTries = 0;
@@ -51,8 +56,17 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 				model: m,
 				max_tokens: MAX_TOKENS,
 				messages: msgs,
-				...(thinking ? { thinking: { type: "adaptive" } } : {}),
-				...(schema ? { output_config: { format: { type: "json_schema", schema } } } : {}),
+				...(thinking === "off" ? { thinking: { type: "disabled" } } : { thinking: { type: "adaptive" } }),
+				// One output_config: effort and format are siblings, and a second
+				// spread of the same key would silently drop the first.
+				...(thinking === "light" || schema
+					? {
+						output_config: {
+							...(thinking === "light" ? { effort: "low" } : {}),
+							...(schema ? { format: { type: "json_schema", schema } } : {})
+						}
+					}
+					: {}),
 				// Basic variant on purpose. web_search_20260209 (dynamic filtering) was
 				// tried on 2026-09-08: it doubled input tokens and tripled write-call
 				// time on this workload, because its filtering runs as extra
