@@ -143,10 +143,10 @@ Produce ${need + SPARES} candidate entries for a set of ${k} questions (${need} 
 - "level": your honest 1-5 rating for the table above; every level must be ${bandText(difficulty)}
 - "jargon": true if a general-interest newspaper would need to explain the answer, else false
 Every answer must be a different thing; the same place, person or number under two names is a repeat.${used.length ? `\nAlready in the set, which you must not repeat (answer): ${used.map((u) => `${u.subject} → ${u.a}`).join("; ")}.${relax ? " The topic's members are nearly used up, so a second question about an already-used member is allowed if it asks something different." : " Do not reuse a member already listed."}` : ""}${dropped.length ? `\nTried earlier in this round and dropped. Do not propose these again, nor anything resting on the same fact: ${dropped.map((d) => `${d.subject} (${d.angle} → ${d.a}): ${d.why}`).join("; ")}.` : ""}
-Also give "members", your estimate of how many distinct members the topic has, and "format" as instructed above${log.reading ? "" : ', and "reading" as instructed above'}.
+Also give "members", your estimate of how many distinct members the topic has, and "format" as instructed above${log.reading ? ', and "reading": null, because the reading is already fixed above and must not be restated' : ', and "reading" as instructed above'}.
 Respond with ONLY a JSON object, compact, no prose, no markdown fences:
-{${log.reading ? "" : '"reading":{"includes":"...","excludes":"...","answers":"..."},'}"members":<int>,"format":"mixed" or "fixed: <pattern>","plan":[{"member":"...","angle":"...","answer":"...","level":<1-5>,"jargon":<true|false>}]}`;
-		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: planSchema(!log.reading), cachedSystem, timeoutMs: callTimeout() });
+{"reading":${log.reading ? "null" : '{"includes":"...","excludes":"...","answers":"..."}'},"members":<int>,"format":"mixed" or "fixed: <pattern>","plan":[{"member":"...","angle":"...","answer":"...","level":<1-5>,"jargon":<true|false>}]}`;
+		const data = await callModel(prompt, { useSearch: false, maxUses: 0, signal, onStatus, a, thinking: "deep", schema: planSchema(), cachedSystem, timeoutMs: callTimeout() });
 		finishAttempt(a);
 		if (!data) { emptyCalls += 1; return; }
 		const { text } = unpackContent(data.content || []);
@@ -425,9 +425,10 @@ Respond with ONLY a JSON object, compact, no prose, no markdown fences:
 		outputTokens: t.outputTokens + (x.tokens?.output ?? 0),
 		cacheWriteTokens: t.cacheWriteTokens + (x.tokens?.cacheWrite ?? 0),
 		cacheReadTokens: t.cacheReadTokens + (x.tokens?.cacheRead ?? 0),
+		thinkingTokens: t.thinkingTokens + (x.tokens?.thinking ?? 0),
 		searches: t.searches + (x.tokens?.searches ?? 0),
 		ms: t.ms + (x.ms ?? 0)
-	}), { calls: 0, inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, searches: 0, ms: 0 });
+	}), { calls: 0, inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, thinkingTokens: 0, searches: 0, ms: 0 });
 	log.shortfall = Math.max(0, k - kept.length);
 	log.finishedAt = new Date().toISOString();
 	onStatus(kept.length >= k ? "done" : kept.length ? `short (${kept.length}/${k})` : "failed");

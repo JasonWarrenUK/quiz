@@ -22,15 +22,19 @@ function walk(node: unknown, path: string, problems: string[]): void {
 const valid = (s: JsonSchema) => { const p: string[] = []; walk(s, "$", p); return p; };
 
 describe("structured output schemas", () => {
-	it("plan schema is API-safe with and without the reading block", () => {
-		expect(valid(planSchema(true))).toEqual([]);
-		expect(valid(planSchema(false))).toEqual([]);
+	it("plan schema is API-safe", () => {
+		expect(valid(planSchema())).toEqual([]);
 	});
-	it("plan schema only asks for the reading on the first call", () => {
-		const first = planSchema(true).properties as Record<string, unknown>;
-		const later = planSchema(false).properties as Record<string, unknown>;
-		expect("reading" in first).toBe(true);
-		expect("reading" in later).toBe(false);
+	it("plan schema is byte-identical on every call, so it stays cacheable", () => {
+		// The schema is part of the cached prefix. It used to drop the reading
+		// block once the reading was fixed, which made plan the one stage that
+		// never got a cache hit; the prompt now asks for null instead.
+		expect(JSON.stringify(planSchema())).toBe(JSON.stringify(planSchema()));
+	});
+	it("plan schema allows a null reading for calls after the first", () => {
+		const reading = (planSchema().properties as Record<string, JsonSchema>).reading;
+		expect(reading.anyOf).toBeDefined();
+		expect((reading.anyOf as JsonSchema[]).some((x) => x.type === "null")).toBe(true);
 	});
 	it("solve and judge schemas are API-safe", () => {
 		expect(valid(SOLVE_SCHEMA)).toEqual([]);

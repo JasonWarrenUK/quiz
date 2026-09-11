@@ -101,7 +101,7 @@ export interface GenAttempt {
 	usage: string | null;
 	// The same figures unformatted, so a run can be totalled without reparsing
 	// the display string.
-	tokens?: { input: number; output: number; cacheWrite: number; cacheRead: number; searches: number };
+	tokens?: { input: number; output: number; cacheWrite: number; cacheRead: number; thinking: number; searches: number };
 	rawHead: string | null;
 	parse: string | null;
 	validation: string | null;
@@ -127,6 +127,8 @@ export interface RunTotals {
 	// are tracked apart from plain input tokens.
 	cacheWriteTokens: number;
 	cacheReadTokens: number;
+	// Part of outputTokens, broken out: it is what a thinking setting costs.
+	thinkingTokens: number;
 	searches: number;
 	ms: number;
 }

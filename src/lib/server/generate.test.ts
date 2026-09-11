@@ -120,7 +120,10 @@ describe("fetchBank prompt assembly", () => {
 		expect(prompt).toContain("Roman aqueducts");
 	});
 
-	it("gives every call in a run the identical cached block, so it is reused", async () => {
+	it("gives every call in a run the identical cached block", async () => {
+		// Necessary for reuse but not sufficient: the cache key also covers tools
+		// and output_config, so a stage whose schema or tool set differs writes
+		// its own entry. Reuse within a stage is what the live run confirms.
 		callModel.mockImplementation(async (_p: string, o: { a: Record<string, unknown> }) => {
 			o.a.tokens = { input: 1, output: 1, cacheWrite: 0, cacheRead: 0, searches: 0 };
 			return null;

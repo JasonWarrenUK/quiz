@@ -26,9 +26,14 @@ const PLAN_ENTRY = obj({ member: str, angle: str, answer: str, level: int, jargo
 
 // The first plan call also fixes the reading of the topic; later calls are
 // given it and must not restate it.
-export function planSchema(withReading: boolean): JsonSchema {
+// The schema is part of the cached prefix, so it has to be byte-identical on
+// every plan call in a run: a schema that shrank once the reading was fixed
+// made plan the one stage that never got a cache hit. `reading` is therefore
+// always present and nullable, and the prompt (not the schema) is what tells
+// later calls to send null rather than restate it.
+export function planSchema(): JsonSchema {
 	return obj({
-		...(withReading ? { reading: READING } : {}),
+		reading: nullable(READING),
 		members: int,
 		format: str,
 		plan: list(PLAN_ENTRY)
