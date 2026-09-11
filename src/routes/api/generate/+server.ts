@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Config } from "@sveltejs/adapter-vercel";
 import type { RequestHandler } from "./$types";
 import { fetchBank } from "$lib/server/generate";
-import type { Question } from "$lib/types";
+import { QuestionSchema } from "$lib/question-schema";
 
 // One request runs a topic's whole pipeline (plan, write with search, solve,
 // judge), which takes minutes. Vercel's default function duration is far
@@ -12,33 +12,9 @@ import type { Question } from "$lib/types";
 // being killed. Raising this without raising that just wastes the extra time.
 export const config: Config = { maxDuration: 300 };
 
-const Short = z.string().max(200);
-
-// Mirrors PlanEntry + q. The check state (solved, judged, solver notes,
-// source) must round-trip too: Zod strips unknown keys, and without them a
-// top-up re-solves and re-judges questions that already passed.
-const QuestionSchema = z.object({
-	subject: Short,
-	angle: Short,
-	a: Short,
-	alt: z.array(Short).max(10),
-	level: z.number().min(1).max(5),
-	jargon: z.boolean(),
-	q: z.string().max(400),
-	verified: z.boolean().nullable(),
-	source: z.string().max(300).nullable().optional(),
-	solved: z.enum(["in", "out", "unsolved"]).optional(),
-	solverBest: Short.optional(),
-	solverCandidates: z.array(Short).max(10).optional(),
-	solverRivals: z.array(Short).max(10).optional(),
-	solverDiffers: z.boolean().optional(),
-	solverConfidence: z.string().max(20).optional(),
-	judged: z.enum(["in", "out", "unjudged"]).optional(),
-	judgeNote: z.string().max(400).optional(),
-	judgeUnsure: z.boolean().optional(),
-	rivalVerdicts: z.array(z.object({ name: Short, verdict: z.string().max(20) })).max(10).optional()
-});
-
+// The question shape is defined once, in lib/question-schema.ts, and the
+// PlanEntry/Question types are inferred from it. Validating against the same
+// schema the types come from is what stops the two drifting.
 const RequestSchema = z.object({
 	topic: z.string().min(1).max(300),
 	k: z.number().int().min(2).max(10),
@@ -68,7 +44,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				const result = await fetchBank(topic, k, difficulty, {
 					useSearch,
 					otherTopics,
-					existing: existing as Question[],
+					existing,
 					format,
 					signal: request.signal,
 					onStatus: (status) => send({ type: "status", status })

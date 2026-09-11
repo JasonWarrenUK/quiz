@@ -30,31 +30,12 @@ export interface NamedPlayer extends Player {
 	format: string;
 }
 
-export interface PlanEntry {
-	subject: string;
-	angle: string;
-	a: string;
-	alt: string[];
-	level: number;
-	jargon: boolean;
-	q: string | null;
-	verified: boolean | null;
-	source?: string | null;
-	solved?: "in" | "out" | "unsolved";
-	solverBest?: string;
-	solverCandidates?: string[];
-	solverRivals?: string[];
-	solverDiffers?: boolean;
-	solverConfidence?: string;
-	judged?: "in" | "out" | "unjudged";
-	judgeNote?: string;
-	judgeUnsure?: boolean;
-	rivalVerdicts?: { name: string; verdict: string }[];
-}
-
-export interface Question extends PlanEntry {
-	q: string;
-}
+// PlanEntry and Question are derived from the Zod schemas in
+// question-schema.ts, so the validation the API route runs and the types the
+// app compiles against cannot drift apart. `import type` keeps zod out of the
+// client bundle: this module is imported by Svelte components.
+export type { PlanEntry, Question } from "./question-schema";
+import type { PlanEntry, Question } from "./question-schema";
 
 export interface ScheduleEntry extends Question {
 	topic: number;
