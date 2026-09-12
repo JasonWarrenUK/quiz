@@ -10,6 +10,9 @@ import { QuestionSchema } from "$lib/question-schema";
 // BUDGET_MS in generate.ts is set against this number and must move with it:
 // the pipeline stops itself 60s early so a run ends with a result rather than
 // being killed. Raising this without raising that just wastes the extra time.
+// That budget is enforced two ways, because a per-request timeout alone does
+// not bound a call: a deadline signal stops the retries and the backoff waits
+// inside a call, and MIN_CALL_MS stops a new one starting with no room.
 export const config: Config = { maxDuration: 300 };
 
 // The question shape is defined once, in lib/question-schema.ts, and the

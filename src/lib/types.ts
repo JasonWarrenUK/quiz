@@ -98,6 +98,9 @@ export interface GenAttempt {
 	spareNote?: string;
 	transportRetry?: string;
 	subjects?: string[];
+	// The call was abandoned against the pipeline's time budget rather than
+	// failing on its own merits.
+	timedOut?: boolean;
 }
 
 export interface RunTotals {

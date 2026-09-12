@@ -41,10 +41,32 @@ export function setClientForTests(c: Anthropic): () => void {
 // so every abort leaves this module wearing it.
 const cancelled = () => Object.assign(new Error("cancelled"), { name: "AbortError" });
 
-const sleep = (ms: number, signal?: AbortSignal) =>
+// A deadline stop is not a cancellation: the caller wants the run to end and
+// keep what it has, not to be reported as a user cancel. callModel turns this
+// into a failed call, so the pipeline records it and stops on its own clock.
+export class DeadlineError extends Error {
+	constructor() {
+		super("call abandoned: the pipeline's time budget ran out");
+		this.name = "DeadlineError";
+	}
+}
+
+export function isDeadline(e: unknown): boolean {
+	return e instanceof DeadlineError;
+}
+
+// Waits, unless a signal fires first. Both the caller's cancel signal and the
+// deadline reach this: a sleep that outlives the budget is the thing that let
+// the backoff ladder run past it.
+const sleep = (ms: number, signal?: AbortSignal, deadlineSignal?: AbortSignal) =>
 	new Promise<void>((res, rej) => {
+		if (deadlineSignal?.aborted) return rej(new DeadlineError());
+		if (signal?.aborted) return rej(cancelled());
 		const id = setTimeout(res, ms);
-		signal?.addEventListener("abort", () => { clearTimeout(id); rej(Object.assign(new Error("cancelled"), { name: "AbortError" })); }, { once: true });
+		const onCancel = () => { clearTimeout(id); rej(cancelled()); };
+		const onDeadline = () => { clearTimeout(id); rej(new DeadlineError()); };
+		signal?.addEventListener("abort", onCancel, { once: true });
+		deadlineSignal?.addEventListener("abort", onDeadline, { once: true });
 	});
 
 // A cancellation from the caller. The SDK wraps it as APIUserAbortError, whose
@@ -140,12 +162,17 @@ interface CallModelOpts {
 	// Wall-clock ceiling for this call, so one hung request cannot eat the whole
 	// serverless budget. The caller trims it to whatever remains of the deadline.
 	timeoutMs?: number;
+	// Fires when the pipeline's budget runs out. timeoutMs alone bounds one
+	// request; it does not bound this function, which can sleep through a
+	// backoff ladder and start a fresh request on either side of the deadline.
+	// This is what stops the retries and the sleeps, not just the socket.
+	deadlineSignal?: AbortSignal;
 }
 
 // One API round trip with the transport handling this endpoint has needed:
 // backoff on the retryable failures, and pause_turn continuation for long
 // search loops. Records into `a`.
-export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = "off", schema, cachedSystem, timeoutMs = REQUEST_TIMEOUT_MS }: CallModelOpts): Promise<ModelResponse | null> {
+export async function callModel(prompt: string, { useSearch, maxUses, signal, onStatus, a, thinking = "off", schema, cachedSystem, timeoutMs = REQUEST_TIMEOUT_MS, deadlineSignal }: CallModelOpts): Promise<ModelResponse | null> {
 	a.model = MODEL;
 
 	const params: Anthropic.MessageCreateParamsNonStreaming = {
@@ -194,25 +221,38 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 	// JSON. That second case is not in the SDK's retry set and was added here
 	// for a failure actually observed on this endpoint, so it survives the
 	// swap: the SDK surfaces it as a parse error rather than a status code.
+	// The request observes both signals: the caller's cancel and the deadline.
+	// Without the second, an in-flight request carrying a timeout set before
+	// the deadline keeps running after it.
+	const requestSignal = (): AbortSignal | undefined => {
+		const parts = [signal, deadlineSignal].filter(Boolean) as AbortSignal[];
+		return parts.length ? (parts.length === 1 ? parts[0] : AbortSignal.any(parts)) : undefined;
+	};
+
 	const send = async (messages: Anthropic.MessageParam[]): Promise<Anthropic.Message> => {
 		let tries = 0, badBody = 0;
 		for (;;) {
+			if (deadlineSignal?.aborted) throw new DeadlineError();
 			try {
-				return assertMessage(await client.messages.create({ ...params, messages }, { signal, timeout: timeoutMs, maxRetries: 0 }));
+				return assertMessage(await client.messages.create({ ...params, messages }, { signal: requestSignal(), timeout: timeoutMs, maxRetries: 0 }));
 			} catch (e) {
+				if (isDeadline(e)) throw e;
+				// An abort with the deadline already fired is the deadline, not the
+				// user: the combined signal cannot say which half tripped it.
+				if (deadlineSignal?.aborted) throw new DeadlineError();
 				if (isCancellation(e)) throw cancelled();
 				if ((isBadBody(e) || e instanceof BadBodyError) && badBody < 2) {
 					badBody += 1;
 					const head = e instanceof BadBodyError ? e.head : String((e as Error).message).slice(0, 40);
 					a.transportRetry = `body not JSON (started "${head}"), retried ${badBody}×`;
-					await sleep(800 * badBody, signal);
+					await sleep(800 * badBody, signal, deadlineSignal);
 					continue;
 				}
 				if (!retryable(e) || tries >= RATE_TRIES) throw e;
 				tries += 1;
 				a.rateWaits = tries;
 				onStatus(e instanceof Anthropic.RateLimitError ? `rate limited, waiting (${tries})` : `connection trouble, retrying (${tries})`);
-				await sleep(1500 * Math.pow(2, tries - 1), signal);
+				await sleep(1500 * Math.pow(2, tries - 1), signal, deadlineSignal);
 			}
 		}
 	};
@@ -234,6 +274,9 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 				res = await send(messages);
 			} catch (e) {
 				if (isCancellation(e)) throw cancelled();
+				// Out of time: keep what the earlier turns returned rather than
+				// discarding the call, and let the pipeline stop on its own clock.
+				if (isDeadline(e)) { a.apiError = "continuation after pause_turn abandoned: out of time"; a.timedOut = true; break; }
 				a.apiError = `continuation after pause_turn failed: ${describe(e)}`;
 				break;
 			}
@@ -253,6 +296,9 @@ export async function callModel(prompt: string, { useSearch, maxUses, signal, on
 		return { content: accumulated, stop_reason: res.stop_reason, usage };
 	} catch (e) {
 		if (isCancellation(e)) throw cancelled();
+		// A deadline stop is a failed call, not a thrown cancellation: the run
+		// keeps every question already written and ends on the pipeline's clock.
+		if (isDeadline(e)) { a.apiError = "abandoned: out of time"; a.timedOut = true; return null; }
 		if (e instanceof Anthropic.APIError && typeof e.status === "number") a.status = e.status;
 		a.apiError = describe(e);
 		return null;

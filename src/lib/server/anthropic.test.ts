@@ -322,6 +322,59 @@ describe("callModel aborts (real timers)", () => {
 
 });
 
+// The deadline is the pipeline's budget, not this request's timeout. A timeout
+// bounds one request; these cover what it does not: the waits between retries
+// and the decision to start another one at all.
+describe("callModel against the pipeline deadline", () => {
+	withFakeTimers();
+
+	it("stops retrying once the deadline fires mid-backoff", async () => {
+		// Every attempt is a retryable 429, so without the deadline this would
+		// run the full ladder of 4 retries and 22.5s of waiting.
+		fetchMock.mockImplementation(async () => new Response("rate limited", { status: 429 }));
+		const deadline = new AbortController();
+		const a = attempt();
+
+		const call = callModel("p", opts(a, { deadlineSignal: deadline.signal }));
+		// Fire the deadline while the first backoff wait is in flight.
+		await vi.advanceTimersByTimeAsync(1600);
+		deadline.abort();
+		const res = await run(call);
+
+		expect(res).toBeNull();
+		// One 429, one 1500ms backoff wait, one more 429, then the deadline: it
+		// stops there rather than running the remaining three rungs of the ladder.
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(a.timedOut).toBe(true);
+		expect(a.apiError).toContain("out of time");
+	});
+
+	it("records a deadline stop as a failed call, not a cancellation", async () => {
+		// The distinction matters upstream: a cancellation throws and abandons the
+		// run, while a deadline keeps every question already written.
+		fetchMock.mockImplementation(async () => new Response("rate limited", { status: 429 }));
+		const deadline = new AbortController();
+		deadline.abort();
+		const a = attempt();
+
+		const res = await run(callModel("p", opts(a, { deadlineSignal: deadline.signal })));
+
+		expect(res).toBeNull();
+		expect(a.timedOut).toBe(true);
+	});
+
+	it("still returns a good response when the deadline never fires", async () => {
+		fetchMock.mockResolvedValueOnce(ok(msg("fine")));
+		const deadline = new AbortController();
+		const a = attempt();
+
+		const res = await run(callModel("p", opts(a, { deadlineSignal: deadline.signal })));
+
+		expect(textOf(res?.content)).toEqual(["fine"]);
+		expect(a.timedOut).toBeUndefined();
+	});
+});
+
 // The head exists to say what actually came back. The SDK returns a different
 // shape per content-type, and only one of them reads usefully as a string.
 describe("callModel bad-body head", () => {
