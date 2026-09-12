@@ -88,8 +88,10 @@ export async function fetchBank(topic: string, k: number, difficulty: Difficulty
 	const log: GenLog = { topic, difficulty, attempts: [], search: useSearch, format: format || null, startedAt: new Date().toISOString() };
 	// Everything identical across every call in this run, sent once as a cached
 	// system block instead of being re-billed at full rate on each of them.
-	// Difficulty is fixed for a run, so its prompt belongs here too; the two
-	// concurrent topic workers share this text and so share the cache entry.
+	// Difficulty is fixed for a run, so its prompt belongs here too.
+	// The two concurrent topic workers start together, so both of their first
+	// plan calls miss and both write the entry; the sharing pays from each
+	// worker's second call onward, and for any topic beyond the opening pair.
 	const cachedSystem = `${BOUNDARY_RULES}\n\n${CRAFT}\n\n${DIFF_PROMPT[difficulty]}`;
 	// The platform kills the function at maxDuration and nothing written so far
 	// survives that. Stop before the ceiling and return a short set instead,
