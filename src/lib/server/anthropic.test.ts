@@ -321,3 +321,31 @@ describe("callModel aborts (real timers)", () => {
 	});
 
 });
+
+// The head exists to say what actually came back. The SDK returns a different
+// shape per content-type, and only one of them reads usefully as a string.
+describe("callModel bad-body head", () => {
+	withFakeTimers();
+
+	it("keeps the readable head when a non-JSON body comes back as a string", async () => {
+		// The gateway-HTML case: the SDK hands the raw body back as a string.
+		fetchMock.mockImplementation(async () => new Response("<html>gateway timeout</html>", { status: 200 }));
+		const a = attempt();
+
+		await run(callModel("p", opts(a)));
+
+		expect(a.transportRetry).toContain("<html>gateway timeout");
+	});
+
+	it("renders a JSON body that is not a message instead of [object Object]", async () => {
+		// Content-type is JSON and it parses, so the SDK returns an object. This
+		// is the shape that used to stringify to "[object Object]".
+		fetchMock.mockImplementation(async () => ok({ detail: "upstream rejected the request" }));
+		const a = attempt();
+
+		await run(callModel("p", opts(a)));
+
+		expect(a.transportRetry).not.toContain("[object Object]");
+		expect(a.transportRetry).toContain("upstream rejected");
+	});
+});

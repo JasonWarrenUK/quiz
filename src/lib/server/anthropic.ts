@@ -87,8 +87,21 @@ class BadBodyError extends Error {
 	}
 }
 
+// What the SDK hands back when the body is not a message, by content-type:
+// a non-JSON type comes through as the raw string (the gateway HTML case), a
+// JSON type that parses but is not a message comes through as an object, a 204
+// as null and an empty body as undefined. Only the string is readable as-is,
+// so the other shapes are rendered rather than stringified into "[object
+// Object]" or an empty head.
+function badBodyHead(res: unknown): string {
+	if (typeof res === "string") return res.slice(0, 40);
+	if (res === null) return "(no body: HTTP 204)";
+	if (res === undefined) return "(empty body)";
+	try { return JSON.stringify(res).slice(0, 40); } catch { return "(unreadable body)"; }
+}
+
 function assertMessage(res: Anthropic.Message): Anthropic.Message {
-	if (!res || !Array.isArray(res.content)) throw new BadBodyError(String(res ?? "").slice(0, 40));
+	if (!res || !Array.isArray(res.content)) throw new BadBodyError(badBodyHead(res));
 	return res;
 }
 
