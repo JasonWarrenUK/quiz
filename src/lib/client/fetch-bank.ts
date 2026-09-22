@@ -45,7 +45,11 @@ export async function fetchBankViaApi(topic: string, k: number, difficulty: Diff
 			else if (msg.type === "error") throw new Error(msg.message || "generation failed");
 		}
 	}
-	throw new Error("generation stream ended with no result");
+	// The server sends a done line even when it stops at its own time budget, so
+	// reaching here means the stream died first: almost always the platform
+	// killing the function at maxDuration. Say so, rather than reporting a bare
+	// missing result, because the two call for different responses.
+	throw new Error("the generator stopped before it finished, most likely by running out of time on the server; trying again keeps anything already written");
 }
 
 export type { GenLog };

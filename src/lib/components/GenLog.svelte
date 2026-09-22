@@ -19,9 +19,11 @@
 				{#if l.memberNote}<span class="accent"> · {l.memberNote}</span>{/if}
 				{#if l.reading}<div class="mt-1">reading — includes: {l.reading.includes}; excludes: {l.reading.excludes}; answers are: {l.reading.answers}</div>{/if}
 				{#if l.judgeConstraints}<div class="mt-1">judge's constraints: {l.judgeConstraints.join("; ")}</div>{/if}
+				{#if l.totals && l.totals.calls}<div class="mt-1">run total: {l.totals.calls} call{l.totals.calls === 1 ? "" : "s"} · {l.totals.inputTokens.toLocaleString()} in / {l.totals.outputTokens.toLocaleString()} out{l.totals.cacheReadTokens ? ` · ${l.totals.cacheReadTokens.toLocaleString()} from cache` : ""}{l.totals.cacheWriteTokens ? ` · ${l.totals.cacheWriteTokens.toLocaleString()} written to cache` : ""}{l.totals.searches ? ` · ${l.totals.searches} search${l.totals.searches === 1 ? "" : "es"}` : ""} · {(l.totals.ms / 1000).toFixed(1)}s in calls</div>{/if}
 				{#if l.acceptedWithProblems}<span class="accent"> · {l.acceptedWithProblems}</span>{/if}
 				{#if l.fatal}<span class="danger"> · {l.fatal}</span>{/if}
 				{#if l.cancelled}<span class="danger"> · cancelled</span>{/if}
+				{#if l.timedOut}<span class="danger"> · stopped at the time budget; what was written is kept</span>{/if}
 			</div>
 			{#each l.attempts || [] as a, j (j)}
 				<div class="mt-2 pt-2 attempt">

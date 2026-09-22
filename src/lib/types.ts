@@ -30,31 +30,12 @@ export interface NamedPlayer extends Player {
 	format: string;
 }
 
-export interface PlanEntry {
-	subject: string;
-	angle: string;
-	a: string;
-	alt: string[];
-	level: number;
-	jargon: boolean;
-	q: string | null;
-	verified: boolean | null;
-	source?: string | null;
-	solved?: "in" | "out" | "unsolved";
-	solverBest?: string;
-	solverCandidates?: string[];
-	solverRivals?: string[];
-	solverDiffers?: boolean;
-	solverConfidence?: string;
-	judged?: "in" | "out" | "unjudged";
-	judgeNote?: string;
-	judgeUnsure?: boolean;
-	rivalVerdicts?: { name: string; verdict: string }[];
-}
-
-export interface Question extends PlanEntry {
-	q: string;
-}
+// PlanEntry and Question are derived from the Zod schemas in
+// question-schema.ts, so the validation the API route runs and the types the
+// app compiles against cannot drift apart. `import type` keeps zod out of the
+// client bundle: this module is imported by Svelte components.
+export type { PlanEntry, Question } from "./question-schema";
+import type { PlanEntry, Question } from "./question-schema";
 
 export interface ScheduleEntry extends Question {
 	topic: number;
@@ -99,6 +80,9 @@ export interface GenAttempt {
 	apiError: string | null;
 	stopReason: string | null;
 	usage: string | null;
+	// The same figures unformatted, so a run can be totalled without reparsing
+	// the display string.
+	tokens?: { input: number; output: number; cacheWrite: number; cacheRead: number; thinking: number; searches: number };
 	rawHead: string | null;
 	parse: string | null;
 	validation: string | null;
@@ -114,6 +98,23 @@ export interface GenAttempt {
 	spareNote?: string;
 	transportRetry?: string;
 	subjects?: string[];
+	// The call was abandoned against the pipeline's time budget rather than
+	// failing on its own merits.
+	timedOut?: boolean;
+}
+
+export interface RunTotals {
+	calls: number;
+	inputTokens: number;
+	outputTokens: number;
+	// Cache writes cost ~1.25x and reads ~0.1x of base input price, so the two
+	// are tracked apart from plain input tokens.
+	cacheWriteTokens: number;
+	cacheReadTokens: number;
+	// Part of outputTokens, broken out: it is what a thinking setting costs.
+	thinkingTokens: number;
+	searches: number;
+	ms: number;
 }
 
 export interface GenLog {
@@ -132,6 +133,12 @@ export interface GenLog {
 	acceptedWithProblems?: string;
 	dropped?: DroppedEntry[];
 	shortfall?: number;
+	// Set when the run stopped against its wall-clock budget rather than
+	// finishing or exhausting its call caps.
+	timedOut?: boolean;
+	// Whole-run token totals, summed from the per-call usage. Per-attempt
+	// figures alone made the cost of a run visible only one call at a time.
+	totals?: RunTotals;
 	fatal?: string;
 	cancelled?: boolean;
 	reused?: boolean;

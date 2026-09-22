@@ -11,7 +11,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test:unit": "vitest",
-		"test": "npm run test:unit -- --run"
+		"test": "bun run test:unit --run"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-vercel": "^6.2.0",
@@ -26,6 +26,7 @@
 		"vitest": "^4.0.15"
 	},
 	"dependencies": {
+		"@anthropic-ai/sdk": "^0.125.0",
 		"zod": "^4.5.4"
 	}
 }
